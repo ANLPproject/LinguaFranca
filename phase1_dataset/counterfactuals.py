@@ -1,5 +1,5 @@
 """
-src/data/counterfactuals.py
+phase1_dataset/counterfactuals.py
 ────────────────────────────
 Construct minimal counterfactual questions to balance the failure class.
 
@@ -60,9 +60,9 @@ from typing import Optional
 import yaml
 from tqdm import tqdm
 
-from src.data.label_hops import label_example
-from src.utils.matching import EntityMatcher
-from src.utils.wikidata_aliases import load_alias_table
+from phase1_dataset.label_hops import label_example
+from utils.matching import EntityMatcher
+from utils.wikidata_aliases import load_alias_table
 
 logger = logging.getLogger(__name__)
 
@@ -248,7 +248,7 @@ def _validate_induces_failure(
     Returns True if hop 1 is labeled failure (substitution is valid).
     """
     import torch
-    from src.data.generate_cot import build_prompt, parse_hop_spans, parse_predicted_answer
+    from phase1_dataset.generate_cot import build_prompt, parse_hop_spans, parse_predicted_answer
 
     sys_prompt = cfg["generation"]["system_prompt"]
     prompt     = build_prompt(cf_question, sys_prompt)
@@ -342,7 +342,7 @@ def run_counterfactuals(cfg: dict, model=None, tokenizer=None) -> Path:
 
     # Load model if not provided (needed for validation)
     if model is None and cf_cfg.get("validate_induced_failure", True):
-        from src.data.generate_cot import load_model_and_tokenizer
+        from phase1_dataset.generate_cot import load_model_and_tokenizer
         model, tokenizer = load_model_and_tokenizer(cfg)
 
     counterfactuals = []

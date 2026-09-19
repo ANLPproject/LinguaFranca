@@ -1,5 +1,5 @@
 """
-src/utils/matching.py
+utils/matching.py
 ─────────────────────
 Three-tier (+ optional LLM-judge) entity PRESENCE CHECK for hop labeling.
 
@@ -108,7 +108,7 @@ class EntityMatcher:
     ----------
     aliases : dict[str, list[str]]
         Mapping of canonical entity name → list of known aliases.
-        Built by src/utils/wikidata_aliases.py.
+        Built by utils/wikidata_aliases.py.
     sbert_model_name : str
         HuggingFace sentence-transformers model ID.
     sbert_threshold : float

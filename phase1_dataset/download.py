@@ -1,5 +1,5 @@
 """
-src/data/download.py
+phase1_dataset/download.py
 ─────────────────────
 Download and locally cache:
   • 2WikiMultihopQA  (primary — has structured reasoning graphs)
@@ -16,7 +16,7 @@ We try load_dataset first, fall back to direct HF Hub file downloads,
 and finally try HuggingFace's automatically-generated Parquet export.
 
 Usage (standalone):
-    python src/data/download.py --config configs/data_config.yaml
+    python phase1_dataset/download.py --config configs/data_config.yaml
 """
 
 from __future__ import annotations

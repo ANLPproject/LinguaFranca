@@ -1,5 +1,5 @@
 """
-src/data/label_hops.py
+phase1_dataset/label_hops.py
 ──────────────────────
 Assign success/failure labels to each generated reasoning hop.
 
@@ -35,7 +35,7 @@ Enriches each record with:
     "final_answer_correct": bool
 
 Usage (standalone):
-    python src/data/label_hops.py --config configs/data_config.yaml
+    python phase1_dataset/label_hops.py --config configs/data_config.yaml
 """
 
 from __future__ import annotations
@@ -51,8 +51,8 @@ from typing import Optional
 import yaml
 from tqdm import tqdm
 
-from src.utils.matching import EntityMatcher
-from src.utils.wikidata_aliases import build_alias_table, load_alias_table
+from utils.matching import EntityMatcher
+from utils.wikidata_aliases import build_alias_table, load_alias_table
 
 logger = logging.getLogger(__name__)
 

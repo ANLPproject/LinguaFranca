@@ -12,7 +12,7 @@ This repository implements the full data and modelling pipeline for the project.
 ### Five Phases
 | Phase | Description | Location |
 |---|---|---|
-| 1 | **Data construction & hop labeling** | `src/data/` |
+| 1 | **Data construction & hop labeling** | `phase1_dataset/` |
 | 2 | **Internal-state probing** | `src/probe/` *(coming)* |
 | 3 | **Causal validation (activation patching)** | `src/causal/` *(coming)* |
 | 4 | **Naive Restart RAG intervention** | `src/rag/` *(coming)* |
@@ -55,16 +55,16 @@ Large Language Models usually answer questions correctly, meaning natural failur
 
 ```bash
 # Full pipeline (download → CoT → label → counterfactuals → split)
-python src/data/build_dataset.py --config configs/data_config.yaml
+python phase1_dataset/build_dataset.py --config configs/data_config.yaml
 
 # Dry-run (skips model inference, validates schema only)
-python src/data/build_dataset.py --config configs/data_config.yaml --dry-run
+python phase1_dataset/build_dataset.py --config configs/data_config.yaml --dry-run
 
 # Individual steps
-python src/data/download.py       --config configs/data_config.yaml
-python src/data/generate_cot.py   --config configs/data_config.yaml
-python src/data/label_hops.py     --config configs/data_config.yaml
-python src/data/counterfactuals.py --config configs/data_config.yaml
+python phase1_dataset/download.py       --config configs/data_config.yaml
+python phase1_dataset/generate_cot.py   --config configs/data_config.yaml
+python phase1_dataset/label_hops.py     --config configs/data_config.yaml
+python phase1_dataset/counterfactuals.py --config configs/data_config.yaml
 ```
 
 ### Output schema (`data/processed/*.jsonl`)

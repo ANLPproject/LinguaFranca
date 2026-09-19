@@ -1,5 +1,5 @@
 """
-src/utils/wikidata_aliases.py
+utils/wikidata_aliases.py
 ─────────────────────────────
 Build and load a local alias table:  entity_name → [alias1, alias2, ...]
 

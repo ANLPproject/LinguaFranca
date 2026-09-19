@@ -1,5 +1,5 @@
 """
-src/data/generate_cot.py
+phase1_dataset/generate_cot.py
 ─────────────────────────
 Run the LLM on 2WikiMultihopQA questions to produce XML-tagged CoT trajectories
 and extract per-hop hidden states.
@@ -27,8 +27,8 @@ Outputs
     plus a "single_token" sub-dict for causal patching (if configured).
 
 Usage (standalone):
-    python src/data/generate_cot.py --config configs/data_config.yaml
-    python src/data/generate_cot.py --config configs/data_config.yaml --dry-run
+    python phase1_dataset/generate_cot.py --config configs/data_config.yaml
+    python phase1_dataset/generate_cot.py --config configs/data_config.yaml --dry-run
 """
 
 from __future__ import annotations

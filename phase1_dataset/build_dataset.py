@@ -1,5 +1,5 @@
 """
-src/data/build_dataset.py
+phase1_dataset/build_dataset.py
 ─────────────────────────
 Orchestration script — runs the full Phase 1 pipeline end-to-end:
 
@@ -17,9 +17,9 @@ Outputs
   data/processed/hotpotqa_test.jsonl   (OOD eval, sampled)
 
 Usage:
-  python src/data/build_dataset.py --config configs/data_config.yaml
-  python src/data/build_dataset.py --config configs/data_config.yaml --dry-run
-  python src/data/build_dataset.py --config configs/data_config.yaml --skip-download
+  python phase1_dataset/build_dataset.py --config configs/data_config.yaml
+  python phase1_dataset/build_dataset.py --config configs/data_config.yaml --dry-run
+  python phase1_dataset/build_dataset.py --config configs/data_config.yaml --skip-download
 """
 
 from __future__ import annotations
@@ -182,25 +182,25 @@ def build_dataset(cfg: dict, dry_run: bool = False, skip_download: bool = False)
     # ── Step 1: Download ────────────────────────────────────────────────────
     if not skip_download:
         logger.info("═══ Step 1: Downloading datasets ═══")
-        from src.data.download import download_all
+        from phase1_dataset.download import download_all
         download_all(cfg)
     else:
         logger.info("Skipping download (--skip-download).")
 
     # ── Step 2: CoT generation + hidden states ──────────────────────────────
     logger.info("═══ Step 2: Generating CoT trajectories ═══")
-    from src.data.generate_cot import run_generation
+    from phase1_dataset.generate_cot import run_generation
     run_generation(cfg, dry_run=dry_run)
 
     # ── Step 3: Hop-level labeling ──────────────────────────────────────────
     logger.info("═══ Step 3: Labeling hops ═══")
-    from src.data.label_hops import run_labeling
+    from phase1_dataset.label_hops import run_labeling
     run_labeling(cfg)
 
     # ── Step 4: Counterfactual construction ─────────────────────────────────
     if not dry_run:
         logger.info("═══ Step 4: Building counterfactuals ═══")
-        from src.data.counterfactuals import run_counterfactuals
+        from phase1_dataset.counterfactuals import run_counterfactuals
         augmented_path = run_counterfactuals(cfg)
     else:
         logger.info("[DRY RUN] Skipping counterfactual generation.")

@@ -13,15 +13,15 @@ print("  LinguaFranca Phase 1 — Unit Tests")
 print("=" * 55)
 
 # ── imports ────────────────────────────────────────────────────
-from src.utils.matching import (
+from utils.matching import (
     EntityMatcher,
     extract_noun_phrase_candidates,
     normalize,
 )
-from src.data.generate_cot import parse_hop_spans, parse_predicted_answer
-from src.data.label_hops import label_example
-from src.data.counterfactuals import find_entry_entity
-from src.data.build_dataset import check_no_leakage, split_by_id
+from phase1_dataset.generate_cot import parse_hop_spans, parse_predicted_answer
+from phase1_dataset.label_hops import label_example
+from phase1_dataset.counterfactuals import find_entry_entity
+from phase1_dataset.build_dataset import check_no_leakage, split_by_id
 
 # ── Test 1: normalize() ────────────────────────────────────────
 assert normalize("Christopher Nolan") == "christopher nolan"
@@ -183,7 +183,7 @@ assert entry == "Inception", f"Got: {entry}"
 print("[PASS] find_entry_entity()")
 
 # ── Test 12: class balance checker ───────────────────────────
-from src.data.build_dataset import check_class_balance
+from phase1_dataset.build_dataset import check_class_balance
 import io, logging
 
 # Just verify it runs and logs without crashing
