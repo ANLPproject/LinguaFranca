@@ -99,12 +99,12 @@ LinguaFranca/
 ├── configs/
 │   └── data_config.yaml
 ├── data/                     ← [Phase 1 Kaggle Dataset](https://www.kaggle.com/datasets/havishbalaga/linguafranca-phase1-data)
-│   ├── raw/                  ← cached HF downloads + wikidata_aliases.json
-│   ├── processed/            ← train.jsonl, val.jsonl, test.jsonl, hotpotqa_test.jsonl
-│   └── hidden_states/        ← per-example .pt tensors
+│   ├── raw/                  ← (Generated when running Phase 1)
+│   ├── processed/            ← (Generated when running Phase 1)
+│   └── hidden_states/        ← (Generated when running Phase 1)
 ├── src/
 │   ├── utils/
-│   │   ├── matching.py       ← 3-tier entity presence check
+│   │   ├── matching.py       
 │   │   └── wikidata_aliases.py
 │   └── data/
 │       ├── download.py
@@ -112,5 +112,9 @@ LinguaFranca/
 │       ├── label_hops.py
 │       ├── counterfactuals.py
 │       └── build_dataset.py
+├── tests/                    ← Unit tests
+├── kaggle_phase1.ipynb       ← Kaggle notebook for running Phase 1
+├── kaggle_run.py             ← Script for Kaggle execution
+├── LinguaFranca-Proposal.pdf ← Project Proposal
 └── requirements.txt
 ```
