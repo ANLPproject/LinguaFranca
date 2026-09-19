@@ -193,13 +193,10 @@ def generate_cot_batch(
                 pad_token_id=tokenizer.pad_token_id,
             )
 
-        # Decode only the newly generated tokens (strip the prompt).
-        # Use per-example attention-mask sum (actual non-pad length) instead of
-        # the padded batch shape — left-padding means shorter prompts would
-        # otherwise have their first few generated tokens silently discarded.
-        actual_prompt_lens = inputs["attention_mask"].sum(dim=1).tolist()
-        for ex, enc_attn_len, gen_ids in zip(batch, actual_prompt_lens, output_ids):
-            new_ids   = gen_ids[int(enc_attn_len):]
+        # Decode only the newly generated tokens (strip the prompt)
+        prompt_len = inputs["input_ids"].shape[1]
+        for ex, gen_ids in zip(batch, output_ids):
+            new_ids   = gen_ids[prompt_len:]
             gen_text  = tokenizer.decode(new_ids, skip_special_tokens=True)
             hop_spans = parse_hop_spans(gen_text)
             pred_ans  = parse_predicted_answer(gen_text)
