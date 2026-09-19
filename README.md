@@ -94,6 +94,8 @@ python src/data/counterfactuals.py --config configs/data_config.yaml
 
 ## Project Structure
 
+> **Note:** The `data/` folder is heavily populated during Phase 1. Because of its large size (3+ GB), it is not tracked in this repository locally. The generated data is hosted securely on Kaggle at the [Phase 1 Dataset Link](https://www.kaggle.com/datasets/havishbalaga/linguafranca-phase1-data).
+
 ```
 LinguaFranca/
 ├── configs/
