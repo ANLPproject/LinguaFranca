@@ -153,7 +153,7 @@ def sample_hotpotqa(cfg: dict, rng: random.Random) -> list[dict]:
         records = [json.loads(line) for line in f]
 
     rng.shuffle(records)
-    n_ood = 500   # fixed OOD eval size
+    n_ood   = cfg["data"].get("n_ood_examples", 500)   # configurable; default 500
     sampled = records[:n_ood]
 
     return [

@@ -250,6 +250,12 @@ def download_hotpotqa(raw_dir: str, cfg: dict) -> dict[str, Path]:
     hf_config = cfg["data"]["datasets"]["hotpotqa"]["hf_config"]
     out_base  = Path(raw_dir) / "hotpotqa"
 
+    # ── Fast path: all splits already on disk ───────────────────────────────
+    expected = ["train", "validation"]
+    if all((out_base / f"{s}.jsonl").exists() for s in expected):
+        logger.info("HotpotQA already cached — skipping download.")
+        return {s: out_base / f"{s}.jsonl" for s in expected}
+
     logger.info("Downloading HotpotQA (%s) from %s …", hf_config, hf_path)
     ds = load_dataset(hf_path, hf_config, trust_remote_code=True)
 

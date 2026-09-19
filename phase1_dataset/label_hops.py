@@ -79,8 +79,33 @@ def _best_np(hop_text: str) -> str:
 
 
 def _normalize_answer(text: str) -> str:
-    """Lowercase + strip for final-answer comparison."""
-    return re.sub(r"\s+", " ", text).strip().lower()
+    """Lowercase + strip punctuation + collapse whitespace for token comparison."""
+    text = re.sub(r"\b(a|an|the)\b", " ", text.lower())
+    text = re.sub(r"[^\w\s]", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _answer_f1(pred: str, gold: str) -> float:
+    """
+    Token-level F1 between predicted and gold answer strings.
+
+    This is the standard SQuAD / HotpotQA evaluation metric.  It tolerates
+    article differences ("the"), punctuation, and partial-name matches that
+    exact-string equality would miss, giving a much more accurate signal for
+    whether the model found the right answer.
+
+    Returns a float in [0, 1].
+    """
+    pred_tokens = _normalize_answer(pred).split()
+    gold_tokens = _normalize_answer(gold).split()
+    if not pred_tokens or not gold_tokens:
+        return float(pred_tokens == gold_tokens)  # both empty -> 1.0, else 0.0
+    common = set(pred_tokens) & set(gold_tokens)
+    if not common:
+        return 0.0
+    precision = len(common) / len(pred_tokens)
+    recall    = len(common) / len(gold_tokens)
+    return 2 * precision * recall / (precision + recall)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -94,21 +119,34 @@ def make_llm_judge(model, tokenizer, device="cuda"):
 
     The judge is called only when all 3 matching tiers fail AND the
     LLM budget (default 5 %) has not been exhausted.
+
+    Uses apply_chat_template so the prompt is formatted correctly for
+    whichever model is loaded (Qwen2.5-Instruct, Llama-3.2-Instruct, etc.).
     """
     import torch
 
-    JUDGE_PROMPT = (
+    SYSTEM = "You are a precise binary judge. Answer with exactly 'yes' or 'no' — no other text."
+    USER_TMPL = (
         "Does the following reasoning step correctly identify the entity '{entity}'?\n"
         "Reasoning step: \"{hop}\"\n"
-        "Answer with exactly 'yes' or 'no'."
+        "Answer:"
     )
 
     @torch.no_grad()
     def judge(gold_entity: str, hop_text: str) -> bool:
-        prompt = JUDGE_PROMPT.format(entity=gold_entity, hop=hop_text)
-        ids    = tokenizer(prompt, return_tensors="pt").input_ids.to(device)
-        out    = model.generate(ids, max_new_tokens=3, do_sample=False)
-        reply  = tokenizer.decode(out[0][ids.shape[1]:], skip_special_tokens=True)
+        messages = [
+            {"role": "system", "content": SYSTEM},
+            {"role": "user",   "content": USER_TMPL.format(entity=gold_entity, hop=hop_text)},
+        ]
+        prompt = tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+        ids  = tokenizer(prompt, return_tensors="pt").input_ids.to(device)
+        out  = model.generate(ids, max_new_tokens=3, do_sample=False,
+                              pad_token_id=tokenizer.pad_token_id)
+        reply = tokenizer.decode(out[0][ids.shape[1]:], skip_special_tokens=True)
         return reply.strip().lower().startswith("yes")
 
     return judge
@@ -199,12 +237,15 @@ def label_example(
         if label == 1 and first_fail is None:
             first_fail = hop_idx
 
-    # Final-answer correctness (normalized string match)
-    final_correct = (
-        _normalize_answer(pred_answer) == _normalize_answer(gold_answer)
-        if pred_answer
-        else False
-    )
+    # Final-answer correctness — token F1 (standard SQuAD/HotpotQA metric).
+    # F1 > 0 means at least one answer token overlaps; we threshold at 0.5
+    # to declare correctness, tolerating partial-name and article differences
+    # that exact-string equality would wrongly count as failures.
+    if pred_answer:
+        f1 = _answer_f1(pred_answer, gold_answer)
+        final_correct = f1 >= 0.5
+    else:
+        final_correct = False
 
     return {
         **example,

@@ -44,6 +44,9 @@ data:
       hf_config: "distractor"
       hf_split: "validation"    # used only for OOD evaluation; ~7.4k items
 
+  # How many HotpotQA validation examples to use for OOD evaluation.
+  n_ood_examples: 500
+
 # ── Entity Matching ──────────────────────────────────────────────────────────
 matching:
   sbert_model: "sentence-transformers/all-MiniLM-L6-v2"

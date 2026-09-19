@@ -22,6 +22,8 @@ from phase1_dataset.generate_cot import parse_hop_spans, parse_predicted_answer
 from phase1_dataset.label_hops import label_example
 from phase1_dataset.counterfactuals import find_entry_entity
 from phase1_dataset.build_dataset import check_no_leakage, split_by_id
+from phase1_dataset.generate_cot import build_prompt
+from phase1_dataset.label_hops import _answer_f1, _normalize_answer
 
 # ── Test 1: normalize() ────────────────────────────────────────
 assert normalize("Christopher Nolan") == "christopher nolan"
@@ -195,7 +197,35 @@ check_class_balance("test_split", [
 ])
 print("[PASS] check_class_balance()")
 
+# ── Test 13: build_prompt ──────────────────────────────────────
+class MockTokenizer:
+    def apply_chat_template(self, messages, tokenize, add_generation_prompt):
+        res = ""
+        for m in messages:
+            res += f"[{m['role'].upper()}] {m['content']} "
+        if add_generation_prompt:
+            res += "[ASSISTANT]"
+        return res.strip()
+
+prompt = build_prompt("Who is X?", "You are a reasoner.", MockTokenizer())
+assert "<|system|>" not in prompt
+assert "<|end|>" not in prompt
+assert "[SYSTEM] You are a reasoner." in prompt
+assert "[USER] Question: Who is X?" in prompt
+assert prompt.endswith("[ASSISTANT]")
+print("[PASS] build_prompt()")
+
+# ── Test 14: answer F1 and normalization ───────────────────────
+assert _normalize_answer("The United States.") == "united states"
+assert _normalize_answer("A dog!") == "dog"
+
+assert _answer_f1("united states", "the united states") > 0.6
+assert _answer_f1("Christopher Nolan", "Nolan") > 0.6
+assert _answer_f1("James Cameron", "Christopher Nolan") == 0.0
+assert _answer_f1("", "test") == 0.0
+print("[PASS] answer F1")
+
 print()
 print("=" * 55)
-print("  ALL 12 TESTS PASSED")
+print("  ALL 14 TESTS PASSED")
 print("=" * 55)

@@ -121,39 +121,59 @@ def find_entry_entity(question: str, reasoning_graph: list[dict]) -> Optional[st
     """
     Identify the surface-form entity in the question that "triggers" hop 1.
 
-    Strategy: the hop-1 gold entity is the *object* of the first reasoning
-    step.  The *subject* entity (which appears in the question and causes the
-    model to retrieve the hop-1 object) is what we want to swap.
+    Strategy:
+      1. Check if any entity from the FULL reasoning graph appears verbatim in
+         the question (case-insensitive).  Skip the hop-1 gold entity itself
+         (that is the *object* we expect to retrieve, not the trigger).
+      2. Fall back to a Title-Case NP regex over the question, filtering out
+         stop-words and the hop-1 gold entity.
 
-    For 2WikiMultihopQA, the reasoning graph encodes:
-        {"hop": 1, "gold_entity": "Christopher Nolan"}
-    which means the question mentions some entity (e.g., "Inception") that the
-    model uses to retrieve "Christopher Nolan".  We extract that trigger by
-    looking for the longest noun phrase in the question that does NOT match the
-    hop-1 gold entity itself.
+    The multi-word regex is anchored to word boundaries so it handles entities
+    like "The Lord of the Rings" and also works on lowercase questions by
+    accepting any run of \\S+ characters anchored around capitalized tokens.
 
-    Fallback: if heuristics fail, return None (example is skipped).
+    Returns the longest matching surface form, or None if heuristics fail.
     """
     import re
     if not reasoning_graph:
         return None
 
-    hop1_gold = reasoning_graph[0].get("gold_entity", "").lower()
+    hop1_gold  = reasoning_graph[0].get("gold_entity", "").lower()
+    q_lower    = question.lower()
 
-    # Candidate NPs from the question (Title-Case heuristic)
-    pattern   = r"\b[A-Z][a-zA-Z'-]*(?:\s+[A-Z][a-zA-Z'-]*)*\b"
-    candidates = re.findall(pattern, question)
+    # ── Pass 1: graph entities that appear in the question ─────────────────────
+    # Other hops' gold entities often ARE the entry entity for the next hop, so
+    # searching the full graph gives a much higher hit rate.
+    candidates_from_graph: list[str] = []
+    for node in reasoning_graph:
+        ent = node.get("gold_entity", "").strip()
+        if not ent:
+            continue
+        ent_lower = ent.lower()
+        if ent_lower == hop1_gold:   # skip the hop-1 object itself
+            continue
+        # Check verbatim presence (word-boundary to avoid partial matches)
+        if re.search(r"\b" + re.escape(ent_lower) + r"\b", q_lower):
+            candidates_from_graph.append(ent)
 
-    # Filter out the hop-1 gold entity itself and its substrings
+    if candidates_from_graph:
+        return max(candidates_from_graph, key=len)
+
+    # ── Pass 2: Title-Case NP regex fallback ───────────────────────────────────
+    # Matches runs of capitalised tokens (handles multi-word proper nouns).
+    pattern    = r"\b[A-Z][a-zA-Z'-]*(?:\s+(?:[A-Z][a-zA-Z'-]*|of|the|and|de|van|von))*\b"
+    np_matches = re.findall(pattern, question)
+
     filtered = [
-        c for c in candidates
-        if c.lower() not in hop1_gold and hop1_gold not in c.lower()
+        c for c in np_matches
+        if c.lower() not in hop1_gold
+        and hop1_gold not in c.lower()
+        and len(c) > 1                # skip single-letter hits
     ]
 
     if not filtered:
         return None
 
-    # Return the longest remaining NP as the most likely entry entity
     return max(filtered, key=len)
 
 
@@ -358,6 +378,20 @@ def run_counterfactuals(cfg: dict, model=None, tokenizer=None) -> Path:
             counterfactuals.append(cf)
 
     logger.info("Generated %d counterfactual examples.", len(counterfactuals))
+
+    # Deduplication: make sure no CF question is identical to any existing
+    # question in the labeled pool (can happen when substitute entity is common).
+    existing_questions = {ex["question"].lower() for ex in examples}
+    before_dedup = len(counterfactuals)
+    counterfactuals = [
+        cf for cf in counterfactuals
+        if cf["question"].lower() not in existing_questions
+    ]
+    if before_dedup != len(counterfactuals):
+        logger.info(
+            "Deduplication removed %d CF examples whose question matched an existing one.",
+            before_dedup - len(counterfactuals),
+        )
 
     # Merge and save
     all_examples = examples + counterfactuals
