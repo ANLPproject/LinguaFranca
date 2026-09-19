@@ -98,7 +98,7 @@ python src/data/counterfactuals.py --config configs/data_config.yaml
 LinguaFranca/
 ├── configs/
 │   └── data_config.yaml
-├── data/
+├── data/                     ← [Phase 1 Kaggle Dataset](https://www.kaggle.com/datasets/havishbalaga/linguafranca-phase1-data)
 │   ├── raw/                  ← cached HF downloads + wikidata_aliases.json
 │   ├── processed/            ← train.jsonl, val.jsonl, test.jsonl, hotpotqa_test.jsonl
 │   └── hidden_states/        ← per-example .pt tensors
