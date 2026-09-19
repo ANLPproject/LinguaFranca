@@ -23,7 +23,17 @@ data:
 
   # How many examples to sample from 2WikiMultihopQA BEFORE augmentation.
   # After counterfactual augmentation the final count will be higher.
-  n_source_examples: 8000
+  #
+  # LAYER SELECTION WORKFLOW (practical 3-step):
+  #   Step 1 — Set n_source_examples: 200 and layers: "all", then run.
+  #             This is the cheap pilot (36 layers x 200 examples ≈ trivial cost).
+  #   Step 2 — Run phase2_probing to train a quick linear probe per layer on
+  #             the pilot output. Plot accuracy vs layer depth to find the
+  #             informative range (usually a clear peak in the middle layers).
+  #   Step 3 — Lock the 5-8 best layers (e.g. [8,12,16,20,24,28]) into the
+  #             layers list below, bump n_source_examples back to 8000, and
+  #             re-run.  Storage and runtime drop by ~6-7x.
+  n_source_examples: 200   # pilot: use 200; change to 8000 for full run
 
   datasets:
     "2wikimultihopqa":
@@ -63,8 +73,16 @@ generation:
 # ── Hidden State Extraction ──────────────────────────────────────────────────
 hidden_states:
   extract: true
-  # "all" → every transformer layer; or a list e.g. [8, 16, 24, 31]
-  layers: "all"
+  # Layer selection:
+  #   "all"        → every transformer layer  (use for the pilot run only)
+  #   [8,12,16,20,24,28]  → locked layers after probing the pilot output
+  #
+  # Workflow:
+  #   1. Run with layers: "all" on the 200-example pilot.
+  #   2. Train a probe per layer (phase2_probing), plot accuracy vs depth.
+  #   3. Pick the 5-8 peak/informative layers and set them here.
+  #   4. Flip n_source_examples back to 8000 and re-run full extraction.
+  layers: "all"   # PILOT: switch to e.g. [8,12,16,20,24,28] after probing
   pooling: "mean"               # mean-pool over hop token span for probe training
   save_single_token: true       # also save last-bridging-entity token for causal patching
 

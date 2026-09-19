@@ -53,22 +53,27 @@ logger = logging.getLogger(__name__)
 # Prompt construction
 # ─────────────────────────────────────────────────────────────────────────────
 
-def build_prompt(question: str, system_prompt: str) -> str:
+def build_prompt(question: str, system_prompt: str, tokenizer) -> str:
     """
-    Build the full prompt string for CoT generation.
+    Build the full prompt string using the tokenizer's own chat template.
 
-    We use a chat-style instruction format compatible with both
-    Llama-3.2-3B-Instruct and Qwen2.5-3B-Instruct.
+    Uses ``tokenizer.apply_chat_template()`` so the format is automatically
+    correct for whichever model is loaded (Qwen2.5-Instruct, Llama-3.2-Instruct,
+    or anything else) — no hardcoded special tokens.
 
     The system prompt instructs the model to wrap each reasoning step in
     <hopN>…</hopN> XML tags.  This gives us:
       • Deterministic token boundaries for hidden-state pooling
       • A simple parser for entity extraction in label_hops.py
     """
-    return (
-        f"<|system|>\n{system_prompt.strip()}\n<|end|>\n"
-        f"<|user|>\nQuestion: {question}\n<|end|>\n"
-        f"<|assistant|>\n"
+    messages = [
+        {"role": "system", "content": system_prompt.strip()},
+        {"role": "user",   "content": f"Question: {question}"},
+    ]
+    return tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True,   # appends the assistant-turn opener
     )
 
 
@@ -166,7 +171,8 @@ def generate_cot_batch(
         unit="batch",
     ):
         batch = examples[batch_start : batch_start + batch_size]
-        prompts = [build_prompt(ex["question"], sys_prompt) for ex in batch]
+        # Pass tokenizer so apply_chat_template uses the right format
+        prompts = [build_prompt(ex["question"], sys_prompt, tokenizer) for ex in batch]
 
         # Tokenize
         inputs = tokenizer(
@@ -197,7 +203,7 @@ def generate_cot_batch(
 
             results.append({
                 **ex,
-                "prompt":          build_prompt(ex["question"], sys_prompt),
+                "prompt":          build_prompt(ex["question"], sys_prompt, tokenizer),
                 "generated_cot":   gen_text,
                 "hop_spans":       hop_spans,
                 "predicted_answer": pred_ans,
@@ -299,7 +305,7 @@ def extract_hidden_states(
                 continue
             pooled[li_idx, hop_idx] = hs[t_start:t_end].mean(dim=0).cpu()
 
-    save_dict: dict = {"pooled": pooled}
+    save_dict: dict = {"pooled": pooled, "layer_indices": layer_indices}
 
     # Single-token (last token of each hop) for causal patching
     if cfg["hidden_states"].get("save_single_token", True):

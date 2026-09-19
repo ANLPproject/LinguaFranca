@@ -251,7 +251,7 @@ def _validate_induces_failure(
     from phase1_dataset.generate_cot import build_prompt, parse_hop_spans, parse_predicted_answer
 
     sys_prompt = cfg["generation"]["system_prompt"]
-    prompt     = build_prompt(cf_question, sys_prompt)
+    prompt     = build_prompt(cf_question, sys_prompt, tokenizer)
 
     inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
     with torch.no_grad():
