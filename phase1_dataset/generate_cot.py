@@ -369,26 +369,49 @@ def run_generation(cfg: dict, dry_run: bool = False) -> Path:
     def _normalise(rec: dict) -> dict:
         """
         Extract the reasoning graph from 2Wiki's `evidences` field.
-
-        Each evidence looks like:
-            {"id": "...", "title": "...", "key": "director", "val": "Christopher Nolan"}
-        We convert to: [{"hop": 1, "gold_entity": "Christopher Nolan"}, …]
+        Handles both list-of-lists and list-of-dicts schemas from different HF download paths.
         """
         evidences = rec.get("evidences", [])
         graph = []
         for i, ev in enumerate(evidences):
-            if isinstance(ev, list) and len(ev) >= 3:
+            if isinstance(ev, (list, tuple)) and len(ev) >= 3:
                 gold_ent = ev[2]
+            elif isinstance(ev, dict):
+                gold_ent = ev.get("val") or ev.get("object") or ev.get("value") or ""
             else:
-                gold_ent = ev.get("val") or ev.get("object") or ""
+                gold_ent = ""
             graph.append({"hop": i + 1, "gold_entity": gold_ent})
 
-        gold_titles = {sf[0] for sf in rec.get("supporting_facts", [])}
+        # supporting_facts: [[title, sent_id], ...] or [{"title": ..., "sent_id": ...}, ...]
+        def _sf_title(sf):
+            if isinstance(sf, (list, tuple)):
+                return sf[0] if sf else ""
+            elif isinstance(sf, dict):
+                return sf.get("title") or sf.get("key") or ""
+            return ""
+
+        gold_titles = {_sf_title(sf) for sf in rec.get("supporting_facts", [])} - {""}
+
+        # context: [[title, [sent, ...]], ...] or [{"title": ..., "sentences": [...]}, ...]
+        def _ctx_parts(ctx):
+            if isinstance(ctx, (list, tuple)):
+                title = ctx[0] if len(ctx) > 0 else ""
+                sents = ctx[1] if len(ctx) > 1 else []
+            elif isinstance(ctx, dict):
+                title = ctx.get("title") or ctx.get("key") or ""
+                sents = ctx.get("sentences") or ctx.get("value") or ctx.get("sents") or []
+            else:
+                return "", []
+            return title, sents
+
         gold_context = ""
         for ctx in rec.get("context", []):
-            title = ctx[0]
+            title, sents = _ctx_parts(ctx)
             if title in gold_titles:
-                sentences = " ".join(ctx[1])
+                if isinstance(sents, (list, tuple)):
+                    sentences = " ".join(str(s) for s in sents)
+                else:
+                    sentences = str(sents)
                 gold_context += f"Title: {title}\n{sentences}\n\n"
 
         return {
