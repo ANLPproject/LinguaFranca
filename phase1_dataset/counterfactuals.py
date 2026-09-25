@@ -292,8 +292,9 @@ def _validate_induces_failure(
     )
 
     hop_spans = parse_hop_spans(gen_text)
+    pred_ans = parse_predicted_answer(gen_text)
     if not hop_spans:
-        return True   # No hop generated → counts as failure
+        return True, prompt, gen_text, hop_spans, pred_ans   # No hop generated → counts as failure
 
     # Check hop 1
     hop1_text   = hop_spans[0]["text"] if hop_spans else ""
