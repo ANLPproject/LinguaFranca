@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 # Prompt construction
 # ─────────────────────────────────────────────────────────────────────────────
 
-def build_prompt(question: str, system_prompt: str, tokenizer) -> str:
+def build_prompt(question: str, context: str, system_prompt: str, tokenizer) -> str:
     """
     Build the full prompt string using the tokenizer's own chat template.
 
@@ -66,9 +66,10 @@ def build_prompt(question: str, system_prompt: str, tokenizer) -> str:
       • Deterministic token boundaries for hidden-state pooling
       • A simple parser for entity extraction in label_hops.py
     """
+    user_content = f"Context:\n{context}\n\nQuestion: {question}" if context else f"Question: {question}"
     messages = [
         {"role": "system", "content": system_prompt.strip()},
-        {"role": "user",   "content": f"Question: {question}"},
+        {"role": "user",   "content": user_content},
     ]
     return tokenizer.apply_chat_template(
         messages,
@@ -172,7 +173,7 @@ def generate_cot_batch(
     ):
         batch = examples[batch_start : batch_start + batch_size]
         # Pass tokenizer so apply_chat_template uses the right format
-        prompts = [build_prompt(ex["question"], sys_prompt, tokenizer) for ex in batch]
+        prompts = [build_prompt(ex["question"], ex.get("context", ""), sys_prompt, tokenizer) for ex in batch]
 
         # Tokenize
         inputs = tokenizer(
@@ -203,7 +204,7 @@ def generate_cot_batch(
 
             results.append({
                 **ex,
-                "prompt":          build_prompt(ex["question"], sys_prompt, tokenizer),
+                "prompt":          build_prompt(ex["question"], ex.get("context", ""), sys_prompt, tokenizer),
                 "generated_cot":   gen_text,
                 "hop_spans":       hop_spans,
                 "predicted_answer": pred_ans,
@@ -381,10 +382,20 @@ def run_generation(cfg: dict, dry_run: bool = False) -> Path:
             else:
                 gold_ent = ev.get("val") or ev.get("object") or ""
             graph.append({"hop": i + 1, "gold_entity": gold_ent})
+
+        gold_titles = {sf[0] for sf in rec.get("supporting_facts", [])}
+        gold_context = ""
+        for ctx in rec.get("context", []):
+            title = ctx[0]
+            if title in gold_titles:
+                sentences = " ".join(ctx[1])
+                gold_context += f"Title: {title}\n{sentences}\n\n"
+
         return {
             "id":             rec.get("_id") or rec.get("id") or f"2wiki_{i}",
             "source":         "2wikimultihopqa",
             "question":       rec["question"],
+            "context":        gold_context.strip(),
             "gold_answer":    rec["answer"],
             "reasoning_graph": graph,
             "raw":            rec,

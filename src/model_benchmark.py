@@ -121,10 +121,20 @@ def run_benchmark(cfg: dict, n_samples: int = 50):
             else:
                 gold_ent = ev.get("val") or ev.get("object") or ""
             graph.append({"hop": i + 1, "gold_entity": gold_ent})
+
+        gold_titles = {sf[0] for sf in rec.get("supporting_facts", [])}
+        gold_context = ""
+        for ctx in rec.get("context", []):
+            title = ctx[0]
+            if title in gold_titles:
+                sentences = " ".join(ctx[1])
+                gold_context += f"Title: {title}\n{sentences}\n\n"
+
         return {
             "id": rec.get("_id") or rec.get("id") or f"2wiki_{i}",
             "source": "2wikimultihopqa",
             "question": rec["question"],
+            "context": gold_context.strip(),
             "gold_answer": rec["answer"],
             "reasoning_graph": graph,
         }
