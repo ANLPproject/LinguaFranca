@@ -75,8 +75,11 @@ def evaluate_model(model_name: str, examples: list[dict], cfg: dict, matcher: En
         logger.error(f"Failed to load {model_name}: {e}")
         return {"well_formed_rate": 0.0, "natural_failure_rate": 0.0}
 
-    # Generate CoT
     enriched_examples = generate_cot_batch(examples, model, tokenizer, cfg)
+    
+    from phase1_dataset.label_hops import make_llm_judge
+    matcher.llm_judge = make_llm_judge(model, tokenizer)
+    matcher.llm_budget = cfg["matching"]["llm_fallback_budget"]
     
     # Label Hops
     labeled_examples = [label_example(ex, matcher) for ex in enriched_examples]
@@ -156,8 +159,18 @@ def run_benchmark(cfg: dict, n_samples: int = 50, hf_token: str = None):
 
         gold_titles = {_sf_title(sf) for sf in rec.get("supporting_facts", [])} - {""}
 
-        # context: either [[title, [sent, ...]], ...] or [{"title": ..., "sentences": [...]}, ...]
-        def _ctx_parts(ctx):
+        # Handle Hugging Face columnar dictionary format
+        ctx_obj = rec.get("context", [])
+        if isinstance(ctx_obj, dict):
+            titles = ctx_obj.get("title", [])
+            sents_list = ctx_obj.get("sentences", [])
+            context_list = list(zip(titles, sents_list))
+        else:
+            context_list = ctx_obj
+
+        gold_context = ""
+        # Only take the first 4 context paragraphs to be safe from 4096 truncation
+        for ctx in context_list[:4]:
             if isinstance(ctx, (list, tuple)):
                 title = ctx[0] if len(ctx) > 0 else ""
                 sents = ctx[1] if len(ctx) > 1 else []
@@ -165,18 +178,14 @@ def run_benchmark(cfg: dict, n_samples: int = 50, hf_token: str = None):
                 title = ctx.get("title") or ctx.get("key") or ""
                 sents = ctx.get("sentences") or ctx.get("value") or ctx.get("sents") or []
             else:
-                return "", []
-            return title, sents
+                continue
 
-        gold_context = ""
-        for ctx in rec.get("context", []):
-            title, sents = _ctx_parts(ctx)
-            if title in gold_titles:
-                if isinstance(sents, (list, tuple)):
-                    sentences = " ".join(str(s) for s in sents)
-                else:
-                    sentences = str(sents)
-                gold_context += f"Title: {title}\n{sentences}\n\n"
+            if isinstance(sents, (list, tuple)):
+                sentences = " ".join(str(s) for s in sents)
+            else:
+                sentences = str(sents)
+                
+            gold_context += f"Title: {title}\n{sentences}\n\n"
 
         # Skip comparison questions — their gold entities come from the KG
         # and don't match the Wikipedia context passages, poisoning the labels.
@@ -206,8 +215,10 @@ def run_benchmark(cfg: dict, n_samples: int = 50, hf_token: str = None):
     )
 
     models_to_test = [
+        "Qwen/Qwen2.5-3B-Instruct",
+        "Qwen/Qwen2.5-7B-Instruct",
         "meta-llama/Llama-3.2-3B-Instruct",
-        "Qwen/Qwen2.5-7B-Instruct"
+        "meta-llama/Llama-3.1-8B-Instruct"
     ]
     
     results = []
