@@ -54,7 +54,7 @@ matching:
   wikidata_aliases_path: "data/raw/wikidata_aliases.json"
   sparql_rate_limit_sec: 0.5     # be polite to Wikidata endpoint
   use_llm_fallback: true
-  llm_fallback_budget: 0.05      # at most 5 % of examples get LLM-judge
+  llm_fallback_budget: 1.0       # 100% budget for pilot testing to ensure no false failures
 
 # ── CoT Generation ───────────────────────────────────────────────────────────
 generation:
