@@ -84,6 +84,7 @@ def evaluate_model(model_name: str, examples: list[dict], cfg: dict, matcher: En
     # Label Hops
     labeled_examples = [label_example(ex, matcher) for ex in enriched_examples]
     
+    matcher.llm_judge = None  # Free the closure reference to the model!
     del model
     torch.cuda.empty_cache()
 
@@ -216,7 +217,6 @@ def run_benchmark(cfg: dict, n_samples: int = 50, hf_token: str = None):
 
     models_to_test = [
         "Qwen/Qwen2.5-3B-Instruct",
-        "Qwen/Qwen2.5-7B-Instruct",
         "meta-llama/Llama-3.2-3B-Instruct",
         "meta-llama/Llama-3.1-8B-Instruct"
     ]
