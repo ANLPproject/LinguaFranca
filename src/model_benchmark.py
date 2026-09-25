@@ -7,6 +7,7 @@ Tests Tag Well-Formedness, Natural Failure Rate, and NNsight Hook compatibility.
 import argparse
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -22,12 +23,18 @@ from utils.wikidata_aliases import load_alias_table
 
 logger = logging.getLogger(__name__)
 
-def test_hooking(model_name: str) -> bool:
+def test_hooking(model_name: str, hf_token: str = None) -> bool:
     """Test if nnsight can trace and overwrite hidden states on this model."""
     try:
         from nnsight import LanguageModel
         logger.info(f"Testing nnsight hooking for {model_name}...")
-        nn_model = LanguageModel(model_name, device_map="auto", torch_dtype=torch.float16, trust_remote_code=True)
+        nn_model = LanguageModel(
+            model_name,
+            device_map="auto",
+            torch_dtype=torch.float16,
+            trust_remote_code=True,
+            token=hf_token,
+        )
         # Try common layer attribute names across architectures
         inner = nn_model.model
         layer = None
@@ -48,17 +55,20 @@ def test_hooking(model_name: str) -> bool:
         logger.warning(f"Hooking failed for {model_name}: {e}")
         return False
 
-def evaluate_model(model_name: str, examples: list[dict], cfg: dict, matcher: EntityMatcher) -> dict:
+def evaluate_model(model_name: str, examples: list[dict], cfg: dict, matcher: EntityMatcher, hf_token: str = None) -> dict:
     """Evaluate Tag Well-Formedness and Natural Failure Rate for a model."""
     logger.info(f"Evaluating {model_name} on {len(examples)} examples...")
     try:
         from transformers import AutoModelForCausalLM, AutoTokenizer
-        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True, padding_side="left")
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_name, trust_remote_code=True, padding_side="left", token=hf_token
+        )
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
-            
+
         model = AutoModelForCausalLM.from_pretrained(
-            model_name, torch_dtype=torch.float16, device_map="auto", trust_remote_code=True
+            model_name, torch_dtype=torch.float16, device_map="auto",
+            trust_remote_code=True, token=hf_token,
         )
         model.eval()
     except Exception as e:
@@ -96,7 +106,17 @@ def evaluate_model(model_name: str, examples: list[dict], cfg: dict, matcher: En
         "natural_failure_rate": total_failed_hops / total_valid_hops if total_valid_hops > 0 else 0.0
     }
 
-def run_benchmark(cfg: dict, n_samples: int = 50):
+def run_benchmark(cfg: dict, n_samples: int = 50, hf_token: str = None):
+    # Authenticate with HuggingFace if token provided
+    if hf_token:
+        from huggingface_hub import login
+        login(token=hf_token)
+        logger.info("Logged in to HuggingFace Hub.")
+    elif os.environ.get("HF_TOKEN"):
+        from huggingface_hub import login
+        login(token=os.environ["HF_TOKEN"])
+        logger.info("Logged in to HuggingFace Hub via HF_TOKEN env var.")
+    hf_token = hf_token or os.environ.get("HF_TOKEN")
     raw_dir = Path(cfg["data"]["raw_dir"])
     train_path = raw_dir / "2wikimultihopqa" / "train.jsonl"
     
@@ -161,8 +181,8 @@ def run_benchmark(cfg: dict, n_samples: int = 50):
     for model_name in models_to_test:
         # Hook test and CoT evaluation are INDEPENDENT.
         # Always run evaluation; hook compatibility is just metadata.
-        hook_success = test_hooking(model_name)
-        metrics = evaluate_model(model_name, examples, cfg, matcher)
+        hook_success = test_hooking(model_name, hf_token=hf_token)
+        metrics = evaluate_model(model_name, examples, cfg, matcher, hf_token=hf_token)
         results.append({
             "Model": model_name,
             "Hook Compatibility": "Yes" if hook_success else "No",
@@ -197,9 +217,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/data_config.yaml")
     parser.add_argument("--n_samples", type=int, default=50, help="Number of questions to benchmark on")
+    parser.add_argument("--hf_token", type=str, default=None, help="HuggingFace token for gated models")
     args = parser.parse_args()
-    
+
     with open(args.config) as f:
         config = yaml.safe_load(f)
-        
-    run_benchmark(config, args.n_samples)
+
+    run_benchmark(config, args.n_samples, hf_token=args.hf_token)
