@@ -73,6 +73,18 @@ generation:
     that advances toward the answer. State that entity or fact explicitly.
     Wrap each step in numbered XML hop tags, then give the final answer.
 
+    Example:
+    Context:
+    Title: Inception
+    Inception is a 2010 science fiction film directed by Christopher Nolan.
+    Title: Christopher Nolan
+    Christopher Edward Nolan is a British and American filmmaker.
+
+    Question: What nationality is the director of Inception?
+    <hop1>From the context, I find that the director of Inception is Christopher Nolan.</hop1>
+    <hop2>From the context, I find that Christopher Nolan is British and American.</hop2>
+    <answer>British and American</answer>
+
     REQUIRED OUTPUT FORMAT (follow exactly):
     <hop1>From the context, I find that [key entity or fact for step 1].</hop1>
     <hop2>From the context, I find that [key entity or fact for step 2].</hop2>
