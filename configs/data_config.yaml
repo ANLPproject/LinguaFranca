@@ -58,8 +58,8 @@ matching:
 
 # ── CoT Generation ───────────────────────────────────────────────────────────
 generation:
-  batch_size: 4
-  max_new_tokens: 512
+  batch_size: 1          # keep low for 7B model on T4x2 to avoid OOM
+  max_new_tokens: 400
   temperature: 0.0               # greedy decoding for reproducibility
   do_sample: false
   max_hops: 4                    # upper bound on <hopN> tags we look for
