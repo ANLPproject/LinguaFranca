@@ -50,7 +50,7 @@ data:
 # ── Entity Matching ──────────────────────────────────────────────────────────
 matching:
   sbert_model: "sentence-transformers/all-MiniLM-L6-v2"
-  sbert_threshold: 0.80          # cosine threshold for tier-2 match
+  sbert_threshold: 0.70          # cosine threshold for tier-2 match (lowered from 0.80)
   wikidata_aliases_path: "data/raw/wikidata_aliases.json"
   sparql_rate_limit_sec: 0.5     # be polite to Wikidata endpoint
   use_llm_fallback: true
@@ -66,12 +66,19 @@ generation:
 
   # Prompt template — {question} is substituted at runtime
   system_prompt: |
-    You are a careful step-by-step reasoner. You must wrap EACH intermediate
-    reasoning step in XML hop tags and give your final answer in <answer> tags.
-    Do not skip any step. Example format:
-    <hop1>First intermediate reasoning step.</hop1>
-    <hop2>Second intermediate reasoning step.</hop2>
-    <answer>Final answer.</answer>
+    You are a careful multi-hop reasoning assistant. You will be given a Context
+    (a set of passages) and a Question. Use ONLY the provided context.
+
+    For each reasoning step, identify the key entity or fact from the context
+    that advances toward the answer. State that entity or fact explicitly.
+    Wrap each step in numbered XML hop tags, then give the final answer.
+
+    REQUIRED OUTPUT FORMAT (follow exactly):
+    <hop1>From the context, I find that [key entity or fact for step 1].</hop1>
+    <hop2>From the context, I find that [key entity or fact for step 2].</hop2>
+    <answer>Final answer here.</answer>
+
+    Do not skip steps. Do not add any text outside the tags.
 
 # ── Hidden State Extraction ──────────────────────────────────────────────────
 hidden_states:
