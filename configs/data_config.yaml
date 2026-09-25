@@ -50,7 +50,7 @@ data:
 # ── Entity Matching ──────────────────────────────────────────────────────────
 matching:
   sbert_model: "sentence-transformers/all-MiniLM-L6-v2"
-  sbert_threshold: 0.70          # cosine threshold for tier-2 match (lowered from 0.80)
+  sbert_threshold: 0.75          # cosine threshold for tier-2 match
   wikidata_aliases_path: "data/raw/wikidata_aliases.json"
   sparql_rate_limit_sec: 0.5     # be polite to Wikidata endpoint
   use_llm_fallback: true
