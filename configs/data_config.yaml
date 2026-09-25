@@ -33,7 +33,7 @@ data:
   #   Step 3 — Lock the 5-8 best layers (e.g. [8,12,16,20,24,28]) into the
   #             layers list below, bump n_source_examples back to 8000, and
   #             re-run.  Storage and runtime drop by ~6-7x.
-  n_source_examples: 200   # pilot: use 200; change to 8000 for full run
+  n_source_examples: 3000   # Set to 3000 for your main run
 
   datasets:
     "2wikimultihopqa":
