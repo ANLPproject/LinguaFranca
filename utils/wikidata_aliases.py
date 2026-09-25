@@ -52,25 +52,32 @@ LIMIT 30
 # Single-entity query
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _query_wikidata(entity_name: str, timeout: int = 12) -> list[str]:
+def _query_wikidata(entity_name: str, timeout: int = 12, max_retries: int = 3) -> list[str]:
     """
     Query Wikidata for all English aliases of `entity_name`.
     Returns an empty list on any error.
     """
     query = _SPARQL_TEMPLATE.format(entity=entity_name.replace('"', '\\"'))
-    try:
-        resp = requests.get(
-            SPARQL_ENDPOINT,
-            params={"query": query, "format": "json"},
-            headers=_HEADERS,
-            timeout=timeout,
-        )
-        resp.raise_for_status()
-        bindings = resp.json()["results"]["bindings"]
-        return [b["alias"]["value"] for b in bindings]
-    except Exception as exc:
-        logger.debug("Wikidata query failed for %r: %s", entity_name, exc)
-        return []
+    for attempt in range(max_retries):
+        try:
+            resp = requests.get(
+                SPARQL_ENDPOINT,
+                params={"query": query, "format": "json"},
+                headers=_HEADERS,
+                timeout=timeout,
+            )
+            if resp.status_code == 429:
+                time.sleep(2 ** attempt)
+                continue
+            resp.raise_for_status()
+            bindings = resp.json()["results"]["bindings"]
+            return [b["alias"]["value"] for b in bindings]
+        except Exception as exc:
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+            else:
+                logger.debug("Wikidata query failed for %r: %s", entity_name, exc)
+    return []
 
 
 # ─────────────────────────────────────────────────────────────────────────────

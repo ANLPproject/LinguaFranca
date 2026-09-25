@@ -307,7 +307,10 @@ def run_labeling(cfg: dict, llm_judge=None) -> Path:
     labeled = [label_example(ex, matcher) for ex in tqdm(examples, desc="Labeling hops")]
 
     # Log statistics
-    total_hops = sum(len(ex["hops"]) for ex in labeled)
+    total_hops = sum(
+        1 for ex in labeled
+        for h in ex["hops"] if h["label"] != -1
+    )
     fail_hops  = sum(
         1 for ex in labeled
         for h in ex["hops"] if h["label"] == 1

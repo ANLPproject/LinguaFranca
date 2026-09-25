@@ -230,16 +230,21 @@ def make_counterfactual(
         # If validation is enabled, run the model and check that hop 1 fails.
         # If validation is disabled (dry run), assume the substitution works.
         if validate_fail:
-            induced_failure = _validate_induces_failure(
+            induced, cf_prompt, cf_gen_text, cf_hop_spans, cf_pred_ans = _validate_induces_failure(
                 cf_question, clean_example, matcher, model, tokenizer, cfg
             )
-            if not induced_failure:
+            if not induced:
                 continue
 
         # Build the counterfactual record
         cf = copy.deepcopy(clean_example)
         cf["id"]               = clean_example["id"] + "_cf"
         cf["question"]         = cf_question
+        if validate_fail:
+            cf["prompt"]           = cf_prompt
+            cf["generated_cot"]    = cf_gen_text
+            cf["hop_spans"]        = cf_hop_spans
+            cf["predicted_answer"] = cf_pred_ans
         cf["is_counterfactual"] = True
         cf["clean_pair_id"]    = clean_example["id"]
         cf["counterfactual_swap"] = {
@@ -262,7 +267,7 @@ def _validate_induces_failure(
     model,
     tokenizer,
     cfg: dict,
-) -> bool:
+) -> tuple:
     """
     Run the model on the counterfactual question and check that hop 1 fails.
     Returns True if hop 1 is labeled failure (substitution is valid).
@@ -296,7 +301,8 @@ def _validate_induces_failure(
         clean_example.get("reasoning_graph", [{}])[0].get("gold_entity", "")
     )
     result = matcher.match(gold_entity, hop1_text)
-    return not result.matched   # True if model did NOT find the gold entity
+    induced = not result.matched
+    return induced, prompt, gen_text, hop_spans, pred_ans
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -378,6 +384,16 @@ def run_counterfactuals(cfg: dict, model=None, tokenizer=None) -> Path:
             counterfactuals.append(cf)
 
     logger.info("Generated %d counterfactual examples.", len(counterfactuals))
+
+    if counterfactuals and model is not None and tokenizer is not None:
+        from phase1_dataset.generate_cot import extract_hidden_states
+        from phase1_dataset.label_hops import label_example
+        logger.info("Labeling and extracting hidden states for counterfactuals...")
+        hs_dir = Path(cfg["data"]["hidden_states_dir"])
+        for cf in tqdm(counterfactuals, desc="Processing counterfactuals"):
+            labeled_cf = label_example(cf, matcher)
+            cf.update(labeled_cf)
+            extract_hidden_states(cf, model, tokenizer, cfg, hs_dir)
 
     # Deduplication: make sure no CF question is identical to any existing
     # question in the labeled pool (can happen when substitute entity is common).

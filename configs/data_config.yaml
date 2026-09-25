@@ -5,10 +5,10 @@
 # ── Model ────────────────────────────────────────────────────────────────────
 model:
   # "meta-llama/Llama-3.2-3B-Instruct"  or  "Qwen/Qwen2.5-3B-Instruct"
-  name: "meta-llama/Llama-3.2-3B-Instruct"
+  name: "Qwen/Qwen2.5-3B-Instruct"
   dtype: "float16"           # float16 | bfloat16
   device_map: "auto"         # "auto" lets accelerate decide GPU/CPU split
-  trust_remote_code: false   # set true for Qwen models
+  trust_remote_code: true    # set true for Qwen models
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 data:

@@ -7,13 +7,13 @@ accelerate>=0.30.0
 nnsight>=0.3.7
 
 # ── Datasets ──────────────────────────────────────────────────────────────────
-datasets>=2.20.0
+datasets==2.19.0
 
 # ── Entity Matching ───────────────────────────────────────────────────────────
 sentence-transformers>=3.0.0
 
 # ── Vector Search (Phase 3 – FAISS index) ────────────────────────────────────
-faiss-cpu>=1.8.0
+# faiss-cpu>=1.8.0  # Installed via conda to avoid compilation hang
 
 # ── Wikidata SPARQL ───────────────────────────────────────────────────────────
 SPARQLWrapper>=2.0.0

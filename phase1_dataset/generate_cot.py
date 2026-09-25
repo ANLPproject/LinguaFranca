@@ -254,6 +254,12 @@ def extract_hidden_states(
         return_offsets_mapping=True,
         add_special_tokens=False,
     )
+
+    expected_len = prompt_token_len + len(gen_encoding["input_ids"])
+    assert len(token_ids) == expected_len, (
+        f"Tokenization mismatch: joint={len(token_ids)} vs separate={expected_len}. "
+        f"Prompt/generation boundary may not be token-aligned for id={example['id']}."
+    )
     offset_map = gen_encoding["offset_mapping"]  # list of (char_start, char_end)
 
     hop_token_spans: list[tuple[int, int]] = []  # (t_start, t_end) in full-seq space
