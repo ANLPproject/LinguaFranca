@@ -27,23 +27,25 @@ def test_hooking(model_name: str) -> bool:
     try:
         from nnsight import LanguageModel
         logger.info(f"Testing nnsight hooking for {model_name}...")
-        model = LanguageModel(model_name, device_map="auto", torch_dtype=torch.float16, trust_remote_code=True)
-        with model.trace("The capital of France is"):
-            # Check architecture generic layer access
-            layer = model.model.layers[0] if hasattr(model.model, 'layers') else None
-            if layer is None:
-                raise ValueError("Could not find model.layers attribute")
-            
-            # Read and write a hidden state
+        nn_model = LanguageModel(model_name, device_map="auto", torch_dtype=torch.float16, trust_remote_code=True)
+        # Try common layer attribute names across architectures
+        inner = nn_model.model
+        layer = None
+        for attr in ("layers", "decoder", "h", "blocks"):
+            if hasattr(inner, attr):
+                layer = getattr(inner, attr)[0]
+                break
+        if layer is None:
+            raise ValueError(f"Cannot find transformer layer block on {type(inner).__name__}")
+        with nn_model.trace("The capital of France is"):
             hidden = layer.output[0].save()
             layer.output[0] = hidden
-            
         logger.info(f"Hooking successful for {model_name}.")
-        del model
+        del nn_model
         torch.cuda.empty_cache()
         return True
     except Exception as e:
-        logger.error(f"Hooking failed for {model_name}: {e}")
+        logger.warning(f"Hooking failed for {model_name}: {e}")
         return False
 
 def evaluate_model(model_name: str, examples: list[dict], cfg: dict, matcher: EntityMatcher) -> dict:
@@ -157,12 +159,10 @@ def run_benchmark(cfg: dict, n_samples: int = 50):
     
     results = []
     for model_name in models_to_test:
+        # Hook test and CoT evaluation are INDEPENDENT.
+        # Always run evaluation; hook compatibility is just metadata.
         hook_success = test_hooking(model_name)
-        if hook_success:
-            metrics = evaluate_model(model_name, examples, cfg, matcher)
-        else:
-            metrics = {"well_formed_rate": 0.0, "natural_failure_rate": 0.0}
-            
+        metrics = evaluate_model(model_name, examples, cfg, matcher)
         results.append({
             "Model": model_name,
             "Hook Compatibility": "Yes" if hook_success else "No",
