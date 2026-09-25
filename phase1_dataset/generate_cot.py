@@ -392,27 +392,31 @@ def run_generation(cfg: dict, dry_run: bool = False) -> Path:
 
         gold_titles = {_sf_title(sf) for sf in rec.get("supporting_facts", [])} - {""}
 
-        # context: [[title, [sent, ...]], ...] or [{"title": ..., "sentences": [...]}, ...]
-        def _ctx_parts(ctx):
-            if isinstance(ctx, (list, tuple)):
-                title = ctx[0] if len(ctx) > 0 else ""
-                sents = ctx[1] if len(ctx) > 1 else []
-            elif isinstance(ctx, dict):
-                title = ctx.get("title") or ctx.get("key") or ""
-                sents = ctx.get("sentences") or ctx.get("value") or ctx.get("sents") or []
-            else:
-                return "", []
-            return title, sents
-
+        # Handle Hugging Face columnar dictionary format
+        ctx_obj = rec.get("context", [])
+        if isinstance(ctx_obj, dict):
+            titles = ctx_obj.get("title", [])
+            sents_list = ctx_obj.get("sentences", [])
+            context_list = list(zip(titles, sents_list))
+        else:
+            context_list = ctx_obj
+            
         gold_context = ""
-        for ctx in rec.get("context", []):
-            title, sents = _ctx_parts(ctx)
-            if title in gold_titles:
-                if isinstance(sents, (list, tuple)):
-                    sentences = " ".join(str(s) for s in sents)
-                else:
-                    sentences = str(sents)
-                gold_context += f"Title: {title}\n{sentences}\n\n"
+        # Only take the first 4 context paragraphs to be safe from 4096 truncation
+        for ctx in context_list[:4]:
+            if isinstance(ctx, (list, tuple)): 
+                t = ctx[0] if ctx else ""
+                sents = ctx[1] if len(ctx) > 1 else []
+            elif isinstance(ctx, dict): 
+                t = ctx.get("title") or ctx.get("key") or ""
+                sents = ctx.get("sentences") or ctx.get("value") or []
+            else:
+                continue
+                
+            if isinstance(sents, (list, tuple)):
+                sents = " ".join(str(s) for s in sents)
+                
+            gold_context += f"Title: {t}\n{sents}\n\n"
 
         return {
             "id":             rec.get("_id") or rec.get("id") or f"2wiki_{i}",
