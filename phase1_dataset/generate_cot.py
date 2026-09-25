@@ -181,7 +181,7 @@ def generate_cot_batch(
             return_tensors="pt",
             padding=True,
             truncation=True,
-            max_length=2560,
+            max_length=4096,
         ).to(model.device)
 
         # Generate
