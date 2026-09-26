@@ -200,6 +200,17 @@ def make_counterfactual(
     max_attempts  = cf_cfg.get("max_substitution_attempts", 25)
     validate_fail = cf_cfg.get("validate_induced_failure", True)
 
+    # SAFETY: validate_induced_failure must stay True.
+    # If disabled, cf["prompt"]/generated_cot are never set, so extract_hidden_states()
+    # would silently extract activations from the *clean* example's prompt — corrupting
+    # every counterfactual hidden-state vector with no error thrown.
+    if not validate_fail:
+        raise ValueError(
+            "validate_induced_failure: false is not supported. "
+            "It would silently write stale clean-example prompts into counterfactual "
+            "records, corrupting hidden-state extraction. Keep it true."
+        )
+
     question    = clean_example["question"]
     graph       = clean_example.get("reasoning_graph", [])
     entry_ent   = find_entry_entity(question, graph)

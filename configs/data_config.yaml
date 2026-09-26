@@ -50,7 +50,7 @@ data:
 # ── Entity Matching ──────────────────────────────────────────────────────────
 matching:
   sbert_model: "sentence-transformers/all-MiniLM-L6-v2"
-  sbert_threshold: 0.75          # cosine threshold for tier-2 match
+  sbert_threshold: 0.70          # cosine threshold for tier-2 match (lowered from 0.75 to reduce near-miss false failures)
   wikidata_aliases_path: "data/raw/wikidata_aliases.json"
   sparql_rate_limit_sec: 0.5     # be polite to Wikidata endpoint
   use_llm_fallback: true
@@ -67,9 +67,11 @@ generation:
   # Prompt template — {question} is substituted at runtime
   system_prompt: |
     You are a careful multi-hop reasoning assistant. You will be given a Context
-    (a set of passages) and a Question. Use ONLY the provided context.
+    (a set of passages) and a Question. Base EVERY reasoning step strictly on
+    facts stated in the Context — do NOT use outside knowledge or memorized
+    facts, and do NOT guess if the Context does not support a step.
 
-    For each reasoning step, identify the key entity or fact from the context
+    For each reasoning step, identify the key entity or fact FROM THE CONTEXT
     that advances toward the answer. State that entity or fact explicitly.
     Wrap each step in numbered XML hop tags, then give the final answer.
 
