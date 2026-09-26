@@ -210,14 +210,8 @@ def run_benchmark(cfg: dict, n_samples: int = 50, hf_token: str = None):
                 
             gold_context += f"Title: {title}\n{sentences}\n\n"
 
-        # Skip comparison questions — their gold entities come from the KG
-        # and don't match the Wikipedia context passages, poisoning the labels.
-        # Bridge questions have clean named-entity intermediate steps.
-        if rec.get("type", "bridge") not in ("bridge", ""):
-            return None
-
         return {
-            "id": rec.get("_id") or rec.get("id") or f"2wiki_{i}",
+            "id": rec.get("_id") or rec.get("id") or rec.get("qid") or "unknown",
             "source": "2wikimultihopqa",
             "question": rec["question"],
             "context": gold_context.strip(),
@@ -225,8 +219,7 @@ def run_benchmark(cfg: dict, n_samples: int = 50, hf_token: str = None):
             "reasoning_graph": graph,
         }
 
-    examples = [ex for ex in [_normalise(r) for r in sampled]
-                if ex is not None]
+    examples = [ex for ex in [_normalise(r) for r in sampled] if ex is not None]
 
     # Load Matcher
     match_cfg = cfg["matching"]

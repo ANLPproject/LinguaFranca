@@ -443,7 +443,7 @@ def run_generation(cfg: dict, dry_run: bool = False) -> Path:
             gold_context += f"Title: {t}\n{sents}\n\n"
 
         return {
-            "id":             rec.get("_id") or rec.get("id") or f"2wiki_{i}",
+            "id":             rec.get("_id") or rec.get("id") or rec.get("qid") or "unknown",
             "source":         "2wikimultihopqa",
             "question":       rec["question"],
             "context":        gold_context.strip(),
