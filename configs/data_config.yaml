@@ -107,7 +107,7 @@ hidden_states:
   #   4. Flip n_source_examples back to 8000 and re-run full extraction.
   layers: "all"   # PILOT: switch to e.g. [8,12,16,20,24,28] after probing
   pooling: "mean"               # mean-pool over hop token span for probe training
-  save_single_token: true       # also save last-bridging-entity token for causal patching
+  save_single_token: false      # set to true ONLY for the small patching subset to save storage
 
 # ── Counterfactuals ──────────────────────────────────────────────────────────
 counterfactuals:

@@ -36,8 +36,10 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import re
 import sys
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -300,7 +302,7 @@ def extract_hidden_states(
     # Mean-pool per hop span, per layer
     n_hops   = len(hop_token_spans)
     hid_dim  = model.config.hidden_size
-    pooled   = torch.zeros(len(layer_indices), n_hops, hid_dim)
+    pooled   = torch.zeros(len(layer_indices), n_hops, hid_dim, dtype=model.dtype)
 
     for li_idx, li in enumerate(layer_indices):
         hs_val = saved_states[li]
@@ -315,7 +317,7 @@ def extract_hidden_states(
     save_dict: dict = {"pooled": pooled, "layer_indices": layer_indices}
 
     # Single-token (last token of each hop) for causal patching
-    if cfg["hidden_states"].get("save_single_token", True):
+    if cfg["hidden_states"].get("save_single_token", False):
         single = {}
         for li_idx, li in enumerate(layer_indices):
             hs_val = saved_states[li]
@@ -464,7 +466,7 @@ def run_generation(cfg: dict, dry_run: bool = False) -> Path:
                 gold_context += f"Title: {t}\n{sents}\n\n"
 
         return {
-            "id":             rec.get("_id") or rec.get("id") or rec.get("qid") or "unknown",
+            "id":             rec.get("_id") or rec.get("id") or rec.get("qid") or f"unknown_{uuid.uuid4().hex[:8]}",
             "source":         "2wikimultihopqa",
             "question":       rec["question"],
             "context":        gold_context.strip(),
