@@ -164,14 +164,23 @@ def _bipartite_assign(
     """
     Greedily assign each generated hop to the best unclaimed gold entity.
 
-    Instead of the strict positional assignment (hop-i vs gold-i), this does a
-    lightweight greedy bipartite match so that minor ordering differences and
-    re-stated facts don't produce false failures.
+    Iterates in model generation order (hop1, hop2, ...) and claims the
+    best-scoring unclaimed gold entity for each hop — but ONLY if the score
+    meets the SBERT threshold. This prevents SBERT noise (which always gives
+    small positive cosine scores even for unrelated text) from creating
+    spurious claims that swap entity assignments.
+
+    Score semantics (from matcher.score()):
+      1.0  — exact normalized-string or alias hit → always claim
+      ≥ sbert_threshold  — confident semantic match → claim
+      < sbert_threshold  — too weak to be a real match → do NOT claim
 
     Returns
     -------
     dict mapping hop_idx (int) -> gold_entity (str)
+    Only hops with a confident match appear in the dict.
     """
+    threshold = getattr(matcher, "sbert_threshold", 0.70)
     unclaimed = list(enumerate(gold_entities))   # [(gold_idx, gold_ent), ...]
     assignments: dict[int, str] = {}
 
@@ -187,16 +196,16 @@ def _bipartite_assign(
         ]
         best_gi, best_ge, best_score = max(scored, key=lambda x: x[2])
 
-        # Claim if the best score would pass the matcher (score > 0 means a tier hit)
-        if best_score > 0:
+        # Only claim if the score meets the SBERT threshold.
+        # score=1.0 means string/alias hit (always above 0.70).
+        # Sub-threshold SBERT scores are noise — don't claim; leave unclaimed
+        # so the hop is correctly labelled "unmatched_gold" (genuine failure).
+        if best_score >= threshold:
             assignments[hop_idx] = best_ge
             unclaimed.remove((best_gi, best_ge))
-        else:
-            # No strong match — fall back to positional gold entity for this hop
-            # (handled by caller when hop_idx is absent from assignments)
-            pass
 
     return assignments
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
