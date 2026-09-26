@@ -244,13 +244,16 @@ def label_example(
         parsed_hops[idx] = m.group(2).strip()
 
     # Bipartite assignment: hop_idx → best unclaimed gold entity.
-    # Iterates in model generation order (hop1, hop2, ...) — gold-list order
-    # is IGNORED because 2Wiki's evidence list is stored in arbitrary order
-    # (e.g. birthplace before director, not the chain order the model uses).
-    # No positional fallback: if bipartite scores 0 for a hop, that hop is
-    # correctly treated as a genuine failure, not forced against the wrong gold.
+    # Filter out empty gold entities first (malformed evidence records from
+    # _normalise()'s fallback returning "" when schema key is missing).
+    # Empty strings were always labelled -1 (unlabeled) in the original code
+    # and must NOT appear in the bipartite pool or be counted as failures.
     gold_entities = [node.get("gold_entity", "") for node in graph]
-    bipartite = _bipartite_assign(parsed_hops, gold_entities, matcher)
+    bipartite = _bipartite_assign(
+        parsed_hops,
+        [g for g in gold_entities if g.strip()],  # filter empty before bipartite
+        matcher,
+    )
 
     labeled_hops = []
     first_fail   = None
@@ -291,13 +294,25 @@ def label_example(
     # ── Phase B: hops in the gold graph that the model never generated ────────
     produced = set(parsed_hops.keys())
     for node in graph:
-        hop_idx = node["hop"]
+        hop_idx     = node["hop"]
+        gold_entity = node.get("gold_entity", "")
         if hop_idx in produced:
+            continue
+        if not gold_entity.strip():
+            # Empty gold entity (malformed evidence) — unlabeled, not a failure
+            labeled_hops.append({
+                "hop_idx":              hop_idx,
+                "text":                 "",
+                "bridging_entity_gold": "",
+                "bridging_entity_pred": "",
+                "match_method":         "skipped_no_gold",
+                "label":                -1,
+            })
             continue
         labeled_hops.append({
             "hop_idx":              hop_idx,
             "text":                 "",
-            "bridging_entity_gold": node.get("gold_entity", ""),
+            "bridging_entity_gold": gold_entity,
             "bridging_entity_pred": "",
             "match_method":         "missing",
             "label":                1,
