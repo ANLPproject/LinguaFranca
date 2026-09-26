@@ -252,7 +252,8 @@ def run_benchmark(cfg: dict, n_samples: int = 50, hf_token: str = None):
     )
 
     models_to_test = [
-        "Qwen/Qwen2.5-7B-Instruct"
+        "Qwen/Qwen2.5-3B-Instruct",
+        "meta-llama/Meta-Llama-3-8B-Instruct"
     ]
     
     results = []
