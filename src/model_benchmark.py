@@ -135,7 +135,29 @@ def run_benchmark(cfg: dict, n_samples: int = 50, hf_token: str = None):
     import random
     rng = random.Random(cfg.get("seed", 42))
     rng.shuffle(all_records)
-    sampled = all_records[:n_samples]
+
+    # Oversample 3x, filter to compositional questions only, then trim to n_samples.
+    # Comparison questions have no dependency chain — they dilute the signal.
+    OVERSAMPLE = 3
+    raw_pool = all_records[: n_samples * OVERSAMPLE]
+    compositional_types = {"bridge", "compositional", "inference"}
+
+    filtered = [
+        r for r in raw_pool
+        if r.get("type", "").lower().strip() in compositional_types
+        or not r.get("type", "").strip()   # unknown type: include
+    ]
+    sampled = filtered[:n_samples]
+    if len(sampled) < n_samples:
+        logger.warning(
+            "Only %d compositional examples found in pool of %d — increase OVERSAMPLE.",
+            len(sampled), len(raw_pool),
+        )
+    else:
+        logger.info(
+            "Benchmark: compositional yield %.0f%% — using %d examples.",
+            100 * len(filtered) / len(raw_pool), len(sampled),
+        )
 
     # Normalize reasoning graph — handle both list and dict schemas from HF download
     def _normalise(rec: dict) -> dict:
