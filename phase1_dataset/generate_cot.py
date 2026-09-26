@@ -527,6 +527,22 @@ def run_generation(cfg: dict, dry_run: bool = False) -> Path:
                 ex.pop("raw", None)
                 f.write(json.dumps(ex, ensure_ascii=False) + "\n")
                 f.flush()
+                
+            # Automatically upload checkpoint to HuggingFace
+            if os.environ.get("HF_REPO_ID") and os.environ.get("HF_TOKEN"):
+                try:
+                    from huggingface_hub import HfApi
+                    api = HfApi(token=os.environ.get("HF_TOKEN"))
+                    api.upload_file(
+                        path_or_fileobj=str(out_path),
+                        path_in_repo="2wikimultihopqa/generated_cot.jsonl",
+                        repo_id=os.environ.get("HF_REPO_ID"),
+                        repo_type="dataset",
+                        commit_message=f"Checkpoint: {min(i + chunk_size, len(examples_to_run))} examples processed"
+                    )
+                    logger.info("Successfully uploaded checkpoint to HF: %s", os.environ.get("HF_REPO_ID"))
+                except Exception as e:
+                    logger.warning("Failed to upload checkpoint to HF: %s", e)
 
     logger.info("Finished processing. Saved CoT records to %s", out_path)
     return out_path
