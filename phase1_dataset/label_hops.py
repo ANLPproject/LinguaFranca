@@ -228,75 +228,77 @@ def label_example(
     gold_answer  = example.get("gold_answer", "")
     pred_answer  = example.get("predicted_answer", "")
 
-    # Parse <hopN> blocks
+    # Parse <hopN> blocks — gives us the model's own generation order
     parsed_hops = {}
     for m in _HOP_TAG_RE.finditer(gen_text):
         idx = int(m.group(1))
         parsed_hops[idx] = m.group(2).strip()
 
-    # Build bipartite assignment: hop_idx -> best unclaimed gold entity.
-    # This is order-tolerant — handles cases where the model states hops in a
-    # slightly different sub-order without triggering false failures.
+    # Bipartite assignment: hop_idx → best unclaimed gold entity.
+    # Iterates in model generation order (hop1, hop2, ...) — gold-list order
+    # is IGNORED because 2Wiki's evidence list is stored in arbitrary order
+    # (e.g. birthplace before director, not the chain order the model uses).
+    # No positional fallback: if bipartite scores 0 for a hop, that hop is
+    # correctly treated as a genuine failure, not forced against the wrong gold.
     gold_entities = [node.get("gold_entity", "") for node in graph]
     bipartite = _bipartite_assign(parsed_hops, gold_entities, matcher)
-    # Fall back to positional for hops with no bipartite hit
-    positional = {node["hop"]: node.get("gold_entity", "") for node in graph}
 
     labeled_hops = []
     first_fail   = None
 
-    for node in graph:
-        hop_idx      = node["hop"]
-        # Prefer bipartite-matched gold entity; fall back to positional
-        gold_entity  = bipartite.get(hop_idx, positional.get(hop_idx, ""))
-        hop_text     = parsed_hops.get(hop_idx, "")
+    # ── Phase A: label hops the model DID generate, in generation order ──────
+    for hop_idx in sorted(parsed_hops.keys()):
+        hop_text    = parsed_hops[hop_idx]
+        gold_entity = bipartite.get(hop_idx, "")  # empty = no bipartite match
 
-        if not hop_text:
-            # Model didn't produce this hop tag at all → treat as failure
+        if not gold_entity:
+            # No gold entity claimed for this hop → genuine failure
             labeled_hops.append({
                 "hop_idx":              hop_idx,
-                "text":                 "",
-                "bridging_entity_gold": gold_entity,
-                "bridging_entity_pred": "",
-                "match_method":         "missing",
+                "text":                 hop_text,
+                "bridging_entity_gold": "",
+                "bridging_entity_pred": _best_np(hop_text),
+                "match_method":         "unmatched_gold",
                 "label":                1,
             })
             if first_fail is None:
                 first_fail = hop_idx
             continue
 
-        if not gold_entity:
-            # No gold entity in the reasoning graph for this hop — skip labeling
-            labeled_hops.append({
-                "hop_idx":              hop_idx,
-                "text":                 hop_text,
-                "bridging_entity_gold": "",
-                "bridging_entity_pred": _best_np(hop_text),
-                "match_method":         "skipped_no_gold",
-                "label":                -1,   # -1 = unlabeled
-            })
-            continue
-
         result = matcher.match(gold_entity, hop_text)
         label  = 0 if result.matched else 1
-
         labeled_hops.append({
             "hop_idx":              hop_idx,
             "text":                 hop_text,
             "bridging_entity_gold": gold_entity,
             "bridging_entity_pred": _best_np(hop_text),
             "match_method":         result.method,
-            "sbert_score":          result.score,
+            "sbert_score":          getattr(result, "score", None),
             "label":                label,
         })
-
         if label == 1 and first_fail is None:
             first_fail = hop_idx
 
+    # ── Phase B: hops in the gold graph that the model never generated ────────
+    produced = set(parsed_hops.keys())
+    for node in graph:
+        hop_idx = node["hop"]
+        if hop_idx in produced:
+            continue
+        labeled_hops.append({
+            "hop_idx":              hop_idx,
+            "text":                 "",
+            "bridging_entity_gold": node.get("gold_entity", ""),
+            "bridging_entity_pred": "",
+            "match_method":         "missing",
+            "label":                1,
+        })
+        if first_fail is None:
+            first_fail = hop_idx
+
+    labeled_hops.sort(key=lambda h: h["hop_idx"])
+
     # Final-answer correctness — token F1 (standard SQuAD/HotpotQA metric).
-    # F1 > 0 means at least one answer token overlaps; we threshold at 0.5
-    # to declare correctness, tolerating partial-name and article differences
-    # that exact-string equality would wrongly count as failures.
     if pred_answer:
         f1 = _answer_f1(pred_answer, gold_answer)
         final_correct = f1 >= 0.5
