@@ -300,7 +300,7 @@ def extract_hidden_states(
     # Mean-pool per hop span, per layer
     n_hops   = len(hop_token_spans)
     hid_dim  = model.config.hidden_size
-    pooled   = torch.zeros(len(layer_indices), n_hops, hid_dim)
+    pooled   = torch.zeros(len(layer_indices), n_hops, hid_dim, dtype=model.dtype)
 
     for li_idx, li in enumerate(layer_indices):
         hs_val = saved_states[li]
@@ -327,7 +327,7 @@ def extract_hidden_states(
                     continue
                 key = f"hop{hop_idx + 1}"
                 if key not in single:
-                    single[key] = torch.zeros(len(layer_indices), hid_dim)
+                    single[key] = torch.zeros(len(layer_indices), hid_dim, dtype=model.dtype)
                 # Last token of the hop span
                 single[key][li_idx] = hs[t_end - 1].cpu()
         save_dict["single_token"] = single
@@ -463,8 +463,10 @@ def run_generation(cfg: dict, dry_run: bool = False) -> Path:
                     sents = " ".join(str(s) for s in sents)
                 gold_context += f"Title: {t}\n{sents}\n\n"
 
+        import hashlib
+        q_hash = hashlib.md5(rec.get("question", "").encode("utf-8")).hexdigest()[:8]
         return {
-            "id":             rec.get("_id") or rec.get("id") or rec.get("qid") or "unknown",
+            "id":             rec.get("_id") or rec.get("id") or rec.get("qid") or f"unknown_{q_hash}",
             "source":         "2wikimultihopqa",
             "question":       rec["question"],
             "context":        gold_context.strip(),

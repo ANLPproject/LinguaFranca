@@ -204,8 +204,10 @@ def run_benchmark(cfg: dict, n_samples: int = 50, hf_token: str = None):
                     sentences = str(sents)
                 gold_context += f"Title: {title}\n{sentences}\n\n"
 
+        import hashlib
+        q_hash = hashlib.md5(rec.get("question", "").encode("utf-8")).hexdigest()[:8]
         return {
-            "id": rec.get("_id") or rec.get("id") or rec.get("qid") or "unknown",
+            "id": rec.get("_id") or rec.get("id") or rec.get("qid") or f"unknown_{q_hash}",
             "source": "2wikimultihopqa",
             "question": rec["question"],
             "context": gold_context.strip(),
