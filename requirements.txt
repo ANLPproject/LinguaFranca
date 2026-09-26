@@ -4,7 +4,12 @@ transformers>=4.45.0
 accelerate>=0.30.0
 
 # ── Mechanistic Interpretability ──────────────────────────────────────────────
-nnsight>=0.3.7
+# Pinned to 0.7.* — API verified: two-separate-traces pattern for cross-prompt
+# activation patching. Do NOT upgrade without re-running the NNsight patch test.
+nnsight==0.7.0
+
+# ── HuggingFace Hub (checkpoint uploads) ─────────────────────────────────────
+huggingface_hub>=0.23.0
 
 # ── Datasets ──────────────────────────────────────────────────────────────────
 datasets==2.19.0

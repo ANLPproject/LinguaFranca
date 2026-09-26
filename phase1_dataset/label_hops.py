@@ -198,9 +198,14 @@ def _bipartite_assign(
 
         # Only claim if the score meets the SBERT threshold.
         # score=1.0 means string/alias hit (always above 0.70).
-        # Sub-threshold SBERT scores are noise — don't claim; leave unclaimed
-        # so the hop is correctly labelled "unmatched_gold" (genuine failure).
+        # Sub-threshold SBERT scores are noise — ask the LLM judge before
+        # giving up.  If no judge is configured or budget is exhausted,
+        # the hop is correctly left unclaimed (genuine failure).
         if best_score >= threshold:
+            assignments[hop_idx] = best_ge
+            unclaimed.remove((best_gi, best_ge))
+        elif matcher.llm_check(best_ge, hop_text):
+            # LLM judge rescued a sub-threshold paraphrase
             assignments[hop_idx] = best_ge
             unclaimed.remove((best_gi, best_ge))
 

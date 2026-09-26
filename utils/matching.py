@@ -200,6 +200,25 @@ class EntityMatcher:
             "llm_fraction": round(self._llm_calls / max(self._total_calls, 1), 4),
         }
 
+    def llm_check(self, gold_entity: str, hop_text: str) -> bool:
+        """
+        Ask the LLM judge whether gold_entity is present/implied in hop_text,
+        subject to the budget cap.  Returns False if:
+          - no judge is configured, or
+          - budget is exhausted.
+
+        This is the correct way for _bipartite_assign() to access Tier 3 without
+        reaching into private attributes.  Budget bookkeeping is done here.
+        """
+        if self.llm_judge is None:
+            return False
+        llm_fraction = self._llm_calls / max(self._total_calls, 1)
+        if llm_fraction >= self.llm_budget:
+            return False
+        self._total_calls += 1
+        self._llm_calls   += 1
+        return bool(self.llm_judge(gold_entity, hop_text))
+
     def score(self, gold_entity: str, hop_text: str) -> float:
         """
         Return a float similarity score for ranking purposes (bipartite assignment).

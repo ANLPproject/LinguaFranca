@@ -57,7 +57,7 @@ matching:
 
 # ── CoT Generation ───────────────────────────────────────────────────────────
 generation:
-  batch_size: 1          # keep low for 7B model on T4x2 to avoid OOM
+  batch_size: 4          # 3B model on T4 x1 comfortably fits batch=4; increase to 8 on T4 x2
   max_new_tokens: 400
   temperature: 0.0               # greedy decoding for reproducibility
   do_sample: false
