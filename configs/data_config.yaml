@@ -4,8 +4,7 @@
 
 # ── Model ────────────────────────────────────────────────────────────────────
 model:
-  # "meta-llama/Llama-3.2-3B-Instruct"  or  "Qwen/Qwen2.5-3B-Instruct"
-  name: "Qwen/Qwen2.5-3B-Instruct"
+  name: "meta-llama/Llama-3.2-3B-Instruct"
   dtype: "float16"           # float16 | bfloat16
   device_map: "auto"         # "auto" lets accelerate decide GPU/CPU split
   trust_remote_code: true    # set true for Qwen models
@@ -33,7 +32,7 @@ data:
   #   Step 3 — Lock the 5-8 best layers (e.g. [8,12,16,20,24,28]) into the
   #             layers list below, bump n_source_examples back to 8000, and
   #             re-run.  Storage and runtime drop by ~6-7x.
-  n_source_examples: 3000   # Set to 3000 for your main run
+  n_source_examples: 2000   # Set to 2000 for your main run
 
   datasets:
     "2wikimultihopqa":
