@@ -36,8 +36,10 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import re
 import sys
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -315,7 +317,7 @@ def extract_hidden_states(
     save_dict: dict = {"pooled": pooled, "layer_indices": layer_indices}
 
     # Single-token (last token of each hop) for causal patching
-    if cfg["hidden_states"].get("save_single_token", True):
+    if cfg["hidden_states"].get("save_single_token", False):
         single = {}
         for li_idx, li in enumerate(layer_indices):
             hs_val = saved_states[li]
@@ -463,10 +465,8 @@ def run_generation(cfg: dict, dry_run: bool = False) -> Path:
                     sents = " ".join(str(s) for s in sents)
                 gold_context += f"Title: {t}\n{sents}\n\n"
 
-        import hashlib
-        q_hash = hashlib.md5(rec.get("question", "").encode("utf-8")).hexdigest()[:8]
         return {
-            "id":             rec.get("_id") or rec.get("id") or rec.get("qid") or f"unknown_{q_hash}",
+            "id":             rec.get("_id") or rec.get("id") or rec.get("qid") or f"unknown_{uuid.uuid4().hex[:8]}",
             "source":         "2wikimultihopqa",
             "question":       rec["question"],
             "context":        gold_context.strip(),

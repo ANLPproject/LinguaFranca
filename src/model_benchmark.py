@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import sys
+import uuid
 from pathlib import Path
 
 import torch
@@ -204,10 +205,8 @@ def run_benchmark(cfg: dict, n_samples: int = 50, hf_token: str = None):
                     sentences = str(sents)
                 gold_context += f"Title: {title}\n{sentences}\n\n"
 
-        import hashlib
-        q_hash = hashlib.md5(rec.get("question", "").encode("utf-8")).hexdigest()[:8]
         return {
-            "id": rec.get("_id") or rec.get("id") or rec.get("qid") or f"unknown_{q_hash}",
+            "id": rec.get("_id") or rec.get("id") or rec.get("qid") or f"unknown_{uuid.uuid4().hex[:8]}",
             "source": "2wikimultihopqa",
             "question": rec["question"],
             "context": gold_context.strip(),
