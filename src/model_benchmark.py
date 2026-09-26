@@ -191,9 +191,11 @@ def run_benchmark(cfg: dict, n_samples: int = 50, hf_token: str = None):
         else:
             context_list = ctx_obj
 
+        # Filter context to only gold supporting-fact passages (same logic as generate_cot.py).
+        # Now that HF dict format is handled correctly, gold_titles filtering works.
+        # Fallback to first 4 paragraphs if gold_titles is empty.
         gold_context = ""
-        # Only take the first 4 context paragraphs to be safe from 4096 truncation
-        for ctx in context_list[:4]:
+        for ctx in context_list:
             if isinstance(ctx, (list, tuple)):
                 title = ctx[0] if len(ctx) > 0 else ""
                 sents = ctx[1] if len(ctx) > 1 else []
@@ -203,12 +205,31 @@ def run_benchmark(cfg: dict, n_samples: int = 50, hf_token: str = None):
             else:
                 continue
 
+            if gold_titles and title not in gold_titles:
+                continue  # skip distractor passages
+
             if isinstance(sents, (list, tuple)):
                 sentences = " ".join(str(s) for s in sents)
             else:
                 sentences = str(sents)
-                
             gold_context += f"Title: {title}\n{sentences}\n\n"
+
+        # Fallback: gold_titles filtering gave nothing → use first 4
+        if not gold_context.strip():
+            for ctx in context_list[:4]:
+                if isinstance(ctx, (list, tuple)):
+                    title = ctx[0] if len(ctx) > 0 else ""
+                    sents = ctx[1] if len(ctx) > 1 else []
+                elif isinstance(ctx, dict):
+                    title = ctx.get("title") or ctx.get("key") or ""
+                    sents = ctx.get("sentences") or ctx.get("value") or ctx.get("sents") or []
+                else:
+                    continue
+                if isinstance(sents, (list, tuple)):
+                    sentences = " ".join(str(s) for s in sents)
+                else:
+                    sentences = str(sents)
+                gold_context += f"Title: {title}\n{sentences}\n\n"
 
         return {
             "id": rec.get("_id") or rec.get("id") or rec.get("qid") or "unknown",

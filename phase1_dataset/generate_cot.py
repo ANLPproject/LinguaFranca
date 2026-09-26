@@ -425,22 +425,43 @@ def run_generation(cfg: dict, dry_run: bool = False) -> Path:
         else:
             context_list = ctx_obj
             
+        # Filter context to only gold supporting-fact passages.
+        # We now correctly handle the HF columnar dict format, so this works.
+        # Fallback to first 4 paragraphs if gold_titles is empty (malformed record).
         gold_context = ""
-        # Only take the first 4 context paragraphs to be safe from 4096 truncation
-        for ctx in context_list[:4]:
-            if isinstance(ctx, (list, tuple)): 
+        matched_titles = set()
+        for ctx in context_list:
+            if isinstance(ctx, (list, tuple)):
                 t = ctx[0] if ctx else ""
                 sents = ctx[1] if len(ctx) > 1 else []
-            elif isinstance(ctx, dict): 
+            elif isinstance(ctx, dict):
                 t = ctx.get("title") or ctx.get("key") or ""
                 sents = ctx.get("sentences") or ctx.get("value") or []
             else:
                 continue
-                
+
+            if gold_titles and t not in gold_titles:
+                continue   # skip distractor passages
+
             if isinstance(sents, (list, tuple)):
                 sents = " ".join(str(s) for s in sents)
-                
             gold_context += f"Title: {t}\n{sents}\n\n"
+            matched_titles.add(t)
+
+        # Fallback: if gold_titles filtering gave nothing (empty record), use first 4
+        if not gold_context.strip():
+            for ctx in context_list[:4]:
+                if isinstance(ctx, (list, tuple)):
+                    t = ctx[0] if ctx else ""
+                    sents = ctx[1] if len(ctx) > 1 else []
+                elif isinstance(ctx, dict):
+                    t = ctx.get("title") or ctx.get("key") or ""
+                    sents = ctx.get("sentences") or ctx.get("value") or []
+                else:
+                    continue
+                if isinstance(sents, (list, tuple)):
+                    sents = " ".join(str(s) for s in sents)
+                gold_context += f"Title: {t}\n{sents}\n\n"
 
         return {
             "id":             rec.get("_id") or rec.get("id") or rec.get("qid") or "unknown",
