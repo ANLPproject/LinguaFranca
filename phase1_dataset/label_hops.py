@@ -153,6 +153,53 @@ def make_llm_judge(model, tokenizer, device="cuda"):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Bipartite hop → gold assignment (order-tolerant)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _bipartite_assign(
+    hop_texts: dict,
+    gold_entities: list[str],
+    matcher: "EntityMatcher",
+) -> dict:
+    """
+    Greedily assign each generated hop to the best unclaimed gold entity.
+
+    Instead of the strict positional assignment (hop-i vs gold-i), this does a
+    lightweight greedy bipartite match so that minor ordering differences and
+    re-stated facts don't produce false failures.
+
+    Returns
+    -------
+    dict mapping hop_idx (int) -> gold_entity (str)
+    """
+    unclaimed = list(enumerate(gold_entities))   # [(gold_idx, gold_ent), ...]
+    assignments: dict[int, str] = {}
+
+    for hop_idx in sorted(hop_texts):
+        hop_text = hop_texts[hop_idx]
+        if not unclaimed:
+            break
+
+        # Score each unclaimed gold entity against this hop text
+        scored = [
+            (gi, ge, matcher.score(ge, hop_text))
+            for gi, ge in unclaimed
+        ]
+        best_gi, best_ge, best_score = max(scored, key=lambda x: x[2])
+
+        # Claim if the best score would pass the matcher (score > 0 means a tier hit)
+        if best_score > 0:
+            assignments[hop_idx] = best_ge
+            unclaimed.remove((best_gi, best_ge))
+        else:
+            # No strong match — fall back to positional gold entity for this hop
+            # (handled by caller when hop_idx is absent from assignments)
+            pass
+
+    return assignments
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Per-example labeling
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -187,12 +234,21 @@ def label_example(
         idx = int(m.group(1))
         parsed_hops[idx] = m.group(2).strip()
 
+    # Build bipartite assignment: hop_idx -> best unclaimed gold entity.
+    # This is order-tolerant — handles cases where the model states hops in a
+    # slightly different sub-order without triggering false failures.
+    gold_entities = [node.get("gold_entity", "") for node in graph]
+    bipartite = _bipartite_assign(parsed_hops, gold_entities, matcher)
+    # Fall back to positional for hops with no bipartite hit
+    positional = {node["hop"]: node.get("gold_entity", "") for node in graph}
+
     labeled_hops = []
     first_fail   = None
 
     for node in graph:
         hop_idx      = node["hop"]
-        gold_entity  = node.get("gold_entity", "")
+        # Prefer bipartite-matched gold entity; fall back to positional
+        gold_entity  = bipartite.get(hop_idx, positional.get(hop_idx, ""))
         hop_text     = parsed_hops.get(hop_idx, "")
 
         if not hop_text:

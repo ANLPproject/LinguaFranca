@@ -358,12 +358,36 @@ def run_generation(cfg: dict, dry_run: bool = False) -> Path:
             f"{src_path} not found — run download.py first."
         )
 
+    # Oversample the raw pool by 3x, filter to compositional questions only,
+    # then trim to n_sample. This happens before any model work — it's free.
+    OVERSAMPLE = 3
     rng = random.Random(seed)
     with open(src_path, encoding="utf-8") as f:
         all_records = [json.loads(line) for line in f]
-
     rng.shuffle(all_records)
-    sampled = all_records[:n_sample]
+    raw_pool = all_records[: n_sample * OVERSAMPLE]
+    compositional_types = {"bridge", "compositional", "inference"}  # not "comparison"
+
+    def _is_compositional(rec: dict) -> bool:
+        q_type = rec.get("type", "").lower().strip()
+        if not q_type:
+            return True   # unknown type: include rather than exclude
+        return q_type in compositional_types
+
+    filtered = [r for r in raw_pool if _is_compositional(r)]
+    sampled = filtered[:n_sample]
+    if len(sampled) < n_sample:
+        logger.warning(
+            "Only found %d compositional examples in pool of %d raw records "
+            "(multiplier=%dx). Consider increasing OVERSAMPLE.",
+            len(sampled), len(raw_pool), OVERSAMPLE,
+        )
+    else:
+        yield_pct = 100 * len(filtered) / len(raw_pool)
+        logger.info(
+            "Compositional yield: %d/%d (%.0f%%) — drew %d examples for generation.",
+            len(filtered), len(raw_pool), yield_pct, len(sampled),
+        )
 
     # Normalise reasoning graph into our schema
     def _normalise(rec: dict) -> dict:

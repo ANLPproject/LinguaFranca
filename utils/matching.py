@@ -199,3 +199,40 @@ class EntityMatcher:
             "llm_calls":   self._llm_calls,
             "llm_fraction": round(self._llm_calls / max(self._total_calls, 1), 4),
         }
+
+    def score(self, gold_entity: str, hop_text: str) -> float:
+        """
+        Return a float similarity score for ranking purposes (bipartite assignment).
+
+        Unlike match(), this never calls the LLM judge (too expensive to call
+        pairwise across all combinations). Returns:
+          1.0  — exact normalized-string or alias hit
+          cosine-score (0.0–1.0) — SBERT best candidate score
+          0.0  — no match across any fast tier
+        """
+        if not gold_entity or not hop_text:
+            return 0.0
+
+        # Tier 0: normalized string
+        if normalize(gold_entity) in normalize(hop_text):
+            return 1.0
+
+        # Tier 1: alias
+        for alias in self.aliases.get(gold_entity, []):
+            if normalize(alias) in normalize(hop_text):
+                return 1.0
+
+        # Tier 2: SBERT cosine (return raw score for ranking)
+        candidates = extract_noun_phrase_candidates(hop_text)
+        if candidates:
+            sbert = self._get_sbert()
+            gold_emb  = sbert.encode(gold_entity, convert_to_numpy=True,
+                                     show_progress_bar=False)
+            cand_embs = sbert.encode(candidates,   convert_to_numpy=True,
+                                     show_progress_bar=False)
+            norms      = np.linalg.norm(cand_embs, axis=1, keepdims=True) + 1e-9
+            gold_norm  = np.linalg.norm(gold_emb) + 1e-9
+            scores     = (cand_embs / norms) @ (gold_emb / gold_norm)
+            return float(scores.max())
+
+        return 0.0
