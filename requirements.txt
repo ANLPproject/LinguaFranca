@@ -20,8 +20,8 @@ sentence-transformers>=3.0.0
 # ── Vector Search (Phase 3 – FAISS index) ────────────────────────────────────
 # faiss-cpu>=1.8.0  # Installed via conda to avoid compilation hang
 
-# ── Wikidata SPARQL ───────────────────────────────────────────────────────────
-SPARQLWrapper>=2.0.0
+pandas>=2.0.0
+pyarrow>=14.0.0
 requests>=2.31.0
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
