@@ -221,10 +221,11 @@ def generate_cot_batch(
 
 def extract_hidden_states(
     example: dict,
-    model,
+    nn_model,
     tokenizer,
     cfg: dict,
     hs_dir: Path,
+    layer_indices: list,
 ) -> None:
     """
     Run a single forward pass with nnsight hooks on the full prompt+generation.
@@ -234,10 +235,7 @@ def extract_hidden_states(
         "single_token": dict  hop_idx → Tensor [n_layers, hidden_dim]
                               (last token of bridging entity mention, for patching)
     """
-    try:
-        from nnsight import LanguageModel as NNsightLM
-    except ImportError:
-        logger.warning("nnsight not installed — skipping hidden state extraction.")
+    if nn_model is None:
         return
 
     out_path = hs_dir / f"{example['id']}.pt"
@@ -286,23 +284,18 @@ def extract_hidden_states(
         else:
             hop_token_spans.append((None, None))
 
-    # Determine which layers to hook
-    n_layers      = model.config.num_hidden_layers
-    layers_cfg    = cfg["hidden_states"].get("layers", "all")
-    layer_indices = list(range(n_layers)) if layers_cfg == "all" else layers_cfg
-
     # Run nnsight forward pass with saved layer outputs
-    nn_model = NNsightLM(model, tokenizer=tokenizer)
     saved_states = {}  # layer_idx → Tensor [seq_len, hidden_dim]
 
-    with nn_model.trace(full_text):
-        for li in layer_indices:
-            saved_states[li] = nn_model.model.layers[li].output[0].save()
+    with torch.no_grad():
+        with nn_model.trace(full_text, invoker_args={'truncation': True, 'max_length': 4096}):
+            for li in layer_indices:
+                saved_states[li] = nn_model.model.layers[li].output[0].save()
 
     # Mean-pool per hop span, per layer
     n_hops   = len(hop_token_spans)
-    hid_dim  = model.config.hidden_size
-    pooled   = torch.zeros(len(layer_indices), n_hops, hid_dim, dtype=model.dtype)
+    hid_dim  = nn_model.model.config.hidden_size
+    pooled   = torch.zeros(len(layer_indices), n_hops, hid_dim, dtype=nn_model.model.dtype)
 
     for li_idx, li in enumerate(layer_indices):
         hs_val = saved_states[li]
@@ -336,6 +329,13 @@ def extract_hidden_states(
 
     hs_dir.mkdir(parents=True, exist_ok=True)
     torch.save(save_dict, out_path)
+    
+    del saved_states
+    del save_dict
+    del pooled
+    import gc
+    gc.collect()
+    torch.cuda.empty_cache()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -509,9 +509,23 @@ def run_generation(cfg: dict, dry_run: bool = False) -> Path:
 
     model, tokenizer = load_model_and_tokenizer(cfg)
     
+    try:
+        from nnsight import LanguageModel as NNsightLM
+        nn_model = NNsightLM(model, tokenizer=tokenizer)
+        logger.info("Initialized NNsight wrapper for hidden state extraction.")
+    except ImportError:
+        nn_model = None
+        logger.warning("nnsight not installed — skipping hidden state extraction.")
+        
     chunk_size = 100
     out_path.parent.mkdir(parents=True, exist_ok=True)
     
+    import gc
+    # Determine which layers to hook for the whole run
+    n_layers      = model.config.num_hidden_layers
+    layers_cfg    = cfg["hidden_states"].get("layers", "all")
+    layer_indices = list(range(n_layers)) if layers_cfg == "all" else layers_cfg
+
     # Open in append mode
     with open(out_path, "a", encoding="utf-8") as f:
         for i in range(0, len(examples_to_run), chunk_size):
@@ -521,9 +535,9 @@ def run_generation(cfg: dict, dry_run: bool = False) -> Path:
             enriched = generate_cot_batch(chunk, model, tokenizer, cfg)
             
             # Hidden state extraction (if configured)
-            if cfg["hidden_states"].get("extract", True):
+            if cfg["hidden_states"].get("extract", True) and nn_model is not None:
                 for ex in tqdm(enriched, desc="Hidden states", leave=False):
-                    extract_hidden_states(ex, model, tokenizer, cfg, hs_dir)
+                    extract_hidden_states(ex, nn_model, tokenizer, cfg, hs_dir, layer_indices)
             
             for ex in enriched:
                 ex.pop("raw", None)
@@ -545,6 +559,11 @@ def run_generation(cfg: dict, dry_run: bool = False) -> Path:
                     logger.info("Successfully uploaded checkpoint to HF: %s", os.environ.get("HF_REPO_ID"))
                 except Exception as e:
                     logger.warning("Failed to upload checkpoint to HF: %s", e)
+                    
+            # Clear CUDA cache and run GC after each chunk to prevent VRAM fragmentation
+            del enriched
+            gc.collect()
+            torch.cuda.empty_cache()
 
     logger.info("Finished processing. Saved CoT records to %s", out_path)
     return out_path
