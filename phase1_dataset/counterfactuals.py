@@ -352,9 +352,12 @@ def run_counterfactuals(cfg: dict, model=None, tokenizer=None) -> Path:
     current_fail_ratio = len(fail_examples) / max(len(examples), 1)
     target_ratio       = cf_cfg.get("target_failure_ratio", 0.45)
 
+    # Correct formula: (target_ratio / clean_ratio) * clean_count - fail_count
+    # To reach exactly target_ratio, we need:
+    # (F + x) / (C + F + x) = target_ratio  =>  x = (target_ratio / (1 - target_ratio)) * C - F
     n_needed_total = max(
         0,
-        int(target_ratio * len(examples) / (1 - target_ratio)) - len(fail_examples),
+        int((target_ratio / (1.0 - target_ratio)) * len(clean_examples)) - len(fail_examples),
     )
     
     # Load existing counterfactuals if we are resuming from a checkpoint
