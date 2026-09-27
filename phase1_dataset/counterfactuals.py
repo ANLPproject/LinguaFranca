@@ -335,10 +335,6 @@ def run_counterfactuals(cfg: dict, model=None, tokenizer=None) -> Path:
     labeled_path   = raw_dir / "2wikimultihopqa" / "labeled.jsonl"
     augmented_path = raw_dir / "2wikimultihopqa" / "augmented.jsonl"
 
-    if augmented_path.exists():
-        logger.info("augmented.jsonl already exists — skipping.")
-        return augmented_path
-
     if not labeled_path.exists():
         raise FileNotFoundError(f"{labeled_path} not found — run label_hops.py first.")
 
@@ -356,17 +352,35 @@ def run_counterfactuals(cfg: dict, model=None, tokenizer=None) -> Path:
     current_fail_ratio = len(fail_examples) / max(len(examples), 1)
     target_ratio       = cf_cfg.get("target_failure_ratio", 0.45)
 
-    logger.info(
-        "Current failure ratio: %.1f%% (%d/%d) — target: %.0f%%",
-        100 * current_fail_ratio, len(fail_examples), len(examples),
-        100 * target_ratio,
-    )
-
-    n_needed = max(
+    n_needed_total = max(
         0,
         int(target_ratio * len(examples) / (1 - target_ratio)) - len(fail_examples),
     )
-    logger.info("Need %d new counterfactual failures.", n_needed)
+    
+    # Load existing counterfactuals if we are resuming from a checkpoint
+    existing_counterfactuals = []
+    if augmented_path.exists():
+        with open(augmented_path, "r", encoding="utf-8") as f:
+            all_aug = [json.loads(l) for l in f]
+        existing_counterfactuals = [ex for ex in all_aug if ex.get("is_counterfactual", False)]
+        logger.info("Found existing augmented.jsonl checkpoint with %d counterfactuals.", len(existing_counterfactuals))
+    else:
+        # If no checkpoint exists, initialize it with the base labeled examples
+        with open(augmented_path, "w", encoding="utf-8") as f:
+            for ex in examples:
+                f.write(json.dumps(ex, ensure_ascii=False) + "\n")
+
+    n_needed = max(0, n_needed_total - len(existing_counterfactuals))
+    
+    logger.info(
+        "Current failure ratio: %.1f%% (%d/%d) — target: %.0f%%. Need %d total CFs, %d remaining.",
+        100 * current_fail_ratio, len(fail_examples), len(examples),
+        100 * target_ratio, n_needed_total, n_needed
+    )
+
+    if n_needed <= 0:
+        logger.info("Target failure ratio already met. Skipping generation.")
+        return augmented_path
 
     # Load matching tools
     aliases = load_alias_table(match_cfg["wikidata_aliases_path"])
@@ -378,63 +392,48 @@ def run_counterfactuals(cfg: dict, model=None, tokenizer=None) -> Path:
 
     entity_vocab = build_entity_vocab(examples)
 
-    # Load model if not provided (needed for validation)
-    if model is None and cf_cfg.get("validate_induced_failure", True):
+    # Load model if not provided (needed for validation and extraction)
+    if model is None:
         from phase1_dataset.generate_cot import load_model_and_tokenizer
         model, tokenizer = load_model_and_tokenizer(cfg)
 
-    counterfactuals = []
-    rng.shuffle(clean_examples)
+    from phase1_dataset.generate_cot import extract_hidden_states
+    hs_dir = Path(cfg["data"]["hidden_states_dir"])
 
-    for ex in tqdm(clean_examples, desc="Building counterfactuals"):
-        if len(counterfactuals) >= n_needed:
+    # Shuffle clean examples, but exclude ones we've already used for counterfactuals
+    used_clean_ids = {cf["clean_pair_id"] for cf in existing_counterfactuals}
+    available_clean = [ex for ex in clean_examples if ex["id"] not in used_clean_ids]
+    rng.shuffle(available_clean)
+
+    cfs_generated = 0
+    existing_questions = {ex["question"].lower() for ex in examples} | {cf["question"].lower() for cf in existing_counterfactuals}
+
+    logger.info("Starting counterfactual generation. Checkpoints will be appended to augmented.jsonl instantly.")
+    for ex in tqdm(available_clean, desc="Building & Extracting CFs"):
+        if cfs_generated >= n_needed:
             break
+            
         cf = make_counterfactual(
             ex, entity_vocab, tokenizer, matcher, model, cfg, rng
         )
+        
         if cf is not None:
-            counterfactuals.append(cf)
-
-    logger.info("Generated %d counterfactual examples.", len(counterfactuals))
-
-    if counterfactuals and model is not None and tokenizer is not None:
-        from phase1_dataset.generate_cot import extract_hidden_states
-        from phase1_dataset.label_hops import label_example
-        logger.info("Labeling and extracting hidden states for counterfactuals...")
-        hs_dir = Path(cfg["data"]["hidden_states_dir"])
-        for cf in tqdm(counterfactuals, desc="Processing counterfactuals"):
+            if cf["question"].lower() in existing_questions:
+                continue # Deduplication
+                
+            # Process immediately
             labeled_cf = label_example(cf, matcher)
             cf.update(labeled_cf)
             extract_hidden_states(cf, model, tokenizer, cfg, hs_dir)
+            
+            # Append to file as a checkpoint!
+            with open(augmented_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(cf, ensure_ascii=False) + "\n")
+            
+            existing_questions.add(cf["question"].lower())
+            cfs_generated += 1
 
-    # Deduplication: make sure no CF question is identical to any existing
-    # question in the labeled pool (can happen when substitute entity is common).
-    existing_questions = {ex["question"].lower() for ex in examples}
-    before_dedup = len(counterfactuals)
-    counterfactuals = [
-        cf for cf in counterfactuals
-        if cf["question"].lower() not in existing_questions
-    ]
-    if before_dedup != len(counterfactuals):
-        logger.info(
-            "Deduplication removed %d CF examples whose question matched an existing one.",
-            before_dedup - len(counterfactuals),
-        )
-
-    # Merge and save
-    all_examples = examples + counterfactuals
-    rng.shuffle(all_examples)
-
-    with open(augmented_path, "w", encoding="utf-8") as f:
-        for ex in all_examples:
-            f.write(json.dumps(ex, ensure_ascii=False) + "\n")
-
-    total     = len(all_examples)
-    total_fail = sum(1 for ex in all_examples if ex.get("first_fail_hop") is not None)
-    logger.info(
-        "Saved %d total examples  |  failure ratio: %.1f%%  →  %s",
-        total, 100 * total_fail / max(total, 1), augmented_path,
-    )
+    logger.info("Counterfactual generation complete. Added %d new examples.", cfs_generated)
 
     return augmented_path
 
