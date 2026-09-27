@@ -549,6 +549,14 @@ def run_generation(cfg: dict, dry_run: bool = False) -> Path:
                 try:
                     from huggingface_hub import HfApi
                     api = HfApi(token=os.environ.get("HF_TOKEN"))
+                    
+                    # Ensure the repo exists before uploading
+                    api.create_repo(
+                        repo_id=os.environ.get("HF_REPO_ID"),
+                        repo_type="dataset",
+                        exist_ok=True
+                    )
+                    
                     api.upload_file(
                         path_or_fileobj=str(out_path),
                         path_in_repo="2wikimultihopqa/generated_cot.jsonl",
