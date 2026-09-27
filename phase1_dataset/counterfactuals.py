@@ -397,6 +397,17 @@ def run_counterfactuals(cfg: dict, model=None, tokenizer=None) -> Path:
         from phase1_dataset.generate_cot import load_model_and_tokenizer
         model, tokenizer = load_model_and_tokenizer(cfg)
 
+    try:
+        from nnsight import LanguageModel as NNsightLM
+        nn_model = NNsightLM(model, tokenizer=tokenizer)
+    except ImportError:
+        nn_model = None
+        logger.warning("nnsight not installed — skipping hidden state extraction.")
+
+    n_layers = model.config.num_hidden_layers
+    layers_cfg = cfg["hidden_states"].get("layers", "all")
+    layer_indices = list(range(n_layers)) if layers_cfg == "all" else layers_cfg
+
     from phase1_dataset.generate_cot import extract_hidden_states
     hs_dir = Path(cfg["data"]["hidden_states_dir"])
 
@@ -424,7 +435,8 @@ def run_counterfactuals(cfg: dict, model=None, tokenizer=None) -> Path:
             # Process immediately
             labeled_cf = label_example(cf, matcher)
             cf.update(labeled_cf)
-            extract_hidden_states(cf, model, tokenizer, cfg, hs_dir)
+            if nn_model is not None:
+                extract_hidden_states(cf, nn_model, tokenizer, cfg, hs_dir, layer_indices)
             
             # Append to file as a checkpoint!
             with open(augmented_path, "a", encoding="utf-8") as f:
