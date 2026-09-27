@@ -143,10 +143,10 @@ def make_llm_judge(model, tokenizer, device="cuda"):
             tokenize=False,
             add_generation_prompt=True,
         )
-        ids  = tokenizer(prompt, return_tensors="pt").input_ids.to(device)
-        out  = model.generate(ids, max_new_tokens=3, do_sample=False,
+        enc  = tokenizer(prompt, return_tensors="pt").to(device)
+        out  = model.generate(**enc, max_new_tokens=3, do_sample=False,
                               pad_token_id=tokenizer.pad_token_id)
-        reply = tokenizer.decode(out[0][ids.shape[1]:], skip_special_tokens=True)
+        reply = tokenizer.decode(out[0][enc.input_ids.shape[1]:], skip_special_tokens=True)
         return reply.strip().lower().startswith("yes")
 
     return judge
