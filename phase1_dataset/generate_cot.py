@@ -362,7 +362,7 @@ def run_generation(cfg: dict, dry_run: bool = False) -> Path:
 
     # Oversample the raw pool by 3x, filter to compositional questions only,
     # then trim to n_sample. This happens before any model work — it's free.
-    OVERSAMPLE = 3
+    OVERSAMPLE = 6  # Increased to ensure we have enough for offsets
     rng = random.Random(seed)
     with open(src_path, encoding="utf-8") as f:
         all_records = [json.loads(line) for line in f]
@@ -377,7 +377,10 @@ def run_generation(cfg: dict, dry_run: bool = False) -> Path:
         return q_type in compositional_types
 
     filtered = [r for r in raw_pool if _is_compositional(r)]
-    sampled = filtered[:n_sample]
+    
+    # Allow an offset to generate the *next* batch of disjoint examples
+    offset = cfg["data"].get("dataset_offset", 0)
+    sampled = filtered[offset : offset + n_sample]
     if len(sampled) < n_sample:
         logger.warning(
             "Only found %d compositional examples in pool of %d raw records "
