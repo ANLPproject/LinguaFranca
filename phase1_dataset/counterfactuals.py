@@ -73,20 +73,16 @@ logger = logging.getLogger(__name__)
 
 def build_entity_vocab(examples: list[dict]) -> dict[int, list[str]]:
     """
-    Collect all gold bridging entities from the dataset, grouped by
-    their (rough) token count — used for token-length-matched substitution.
-
-    We use whitespace splitting as a fast proxy for tokenization.
-    The actual token-count check (with the real tokenizer) is done at
-    substitution time.
+    Collect entry entities from the dataset to use as substitutions.
+    This ensures we swap like-for-like (e.g. movies for movies) rather than
+    random dates or nationalities.
     """
     vocab: dict[int, list[str]] = {}
     for ex in examples:
-        for node in ex.get("reasoning_graph", []):
-            ent = node.get("gold_entity", "").strip()
-            if ent:
-                n = len(ent.split())   # rough token count
-                vocab.setdefault(n, []).append(ent)
+        e = find_entry_entity(ex["question"], ex.get("reasoning_graph", []))
+        if e:
+            n = len(e.split())   # rough token count
+            vocab.setdefault(n, []).append(e)
     # De-duplicate within each bucket
     return {k: list(set(v)) for k, v in vocab.items()}
 
@@ -160,15 +156,18 @@ def find_entry_entity(question: str, reasoning_graph: list[dict]) -> Optional[st
         return max(candidates_from_graph, key=len)
 
     # ── Pass 2: Title-Case NP regex fallback ───────────────────────────────────
-    # Matches runs of capitalised tokens (handles multi-word proper nouns).
-    pattern    = r"\b[A-Z][a-zA-Z'-]*(?:\s+(?:[A-Z][a-zA-Z'-]*|of|the|and|de|van|von))*\b"
+    # Matches runs of capitalised tokens (handles multi-word proper nouns) plus optional parentheticals.
+    pattern    = r"\b[A-Z][a-zA-Z'-]*(?:\s+(?:[A-Z][a-zA-Z'-]*|of|the|and|de|van|von))*\b(?:\s*\([^)]*\))?"
     np_matches = re.findall(pattern, question)
+
+    STOP_WORDS = {"what", "where", "who", "when", "why", "how", "which", "the", "a", "an", "is", "are", "was", "were", "do", "does", "did"}
 
     filtered = [
         c for c in np_matches
         if c.lower() not in hop1_gold
         and hop1_gold not in c.lower()
         and len(c) > 1                # skip single-letter hits
+        and c.lower().strip() not in STOP_WORDS
     ]
 
     if not filtered:
@@ -348,28 +347,6 @@ def run_counterfactuals(cfg: dict, model=None, tokenizer=None) -> Path:
         and all(h["label"] == 0 for h in ex.get("hops", []))
     ]
     
-    # Calculate balance based on HOPS, not examples!
-    total_hops = sum(1 for ex in examples for h in ex.get("hops", []) if h.get("label") in (0, 1))
-    fail_hops = sum(1 for ex in examples for h in ex.get("hops", []) if h.get("label") == 1)
-    clean_hops = total_hops - fail_hops
-
-    current_fail_ratio = fail_hops / max(total_hops, 1)
-    target_ratio       = cf_cfg.get("target_failure_ratio", 0.45)
-
-    # Each CF adds exactly 1 failed hop, and ~1 clean hop.
-    # (F + x) / (C + F + 2x) = target_ratio
-    # F + x = target_ratio * C + target_ratio * F + 2 * target_ratio * x
-    # x (1 - 2*target_ratio) = target_ratio * C - (1 - target_ratio) * F
-    # x = (target_ratio * C - (1 - target_ratio) * F) / (1 - 2*target_ratio)
-    if target_ratio == 0.5:
-        n_needed_total = clean_hops - fail_hops
-    else:
-        num = target_ratio * clean_hops - (1 - target_ratio) * fail_hops
-        den = 1.0 - 2.0 * target_ratio
-        n_needed_total = int(num / den) if den != 0 else clean_hops - fail_hops
-        
-    n_needed_total = max(0, min(n_needed_total, len(clean_examples)))
-    
     # Load existing counterfactuals if we are resuming from a checkpoint
     existing_counterfactuals = []
     if augmented_path.exists():
@@ -383,17 +360,15 @@ def run_counterfactuals(cfg: dict, model=None, tokenizer=None) -> Path:
             for ex in examples:
                 f.write(json.dumps(ex, ensure_ascii=False) + "\n")
 
-    n_needed = max(0, n_needed_total - len(existing_counterfactuals))
-    
-    logger.info(
-        "Current failure ratio: %.1f%% (%d/%d) — target: %.0f%%. Need %d total CFs, %d remaining.",
-        100 * current_fail_ratio, fail_hops, total_hops,
-        100 * target_ratio, n_needed_total, n_needed
-    )
+    # Dynamic stopping rule variables
+    all_current_data = examples + existing_counterfactuals
+    fail_h  = sum(1 for e in all_current_data for h in e.get("hops", []) if h.get("label") == 1)
+    clean_h = sum(1 for e in all_current_data for h in e.get("hops", []) if h.get("label") == 0)
+    target_ratio = cf_cfg.get("target_failure_ratio", 0.45)
 
-    if n_needed <= 0:
-        logger.info("Target failure ratio already met. Skipping generation.")
-        return augmented_path
+    current_ratio = fail_h / max(fail_h + clean_h, 1)
+    logger.info("Starting ratio: %.1f%% (%d fail / %d clean hops). Target: %.0f%%", 
+                100 * current_ratio, fail_h, clean_h, 100 * target_ratio)
 
     # Load matching tools
     aliases = load_alias_table(match_cfg["wikidata_aliases_path"])
@@ -434,7 +409,8 @@ def run_counterfactuals(cfg: dict, model=None, tokenizer=None) -> Path:
 
     logger.info("Starting counterfactual generation. Checkpoints will be appended to augmented.jsonl instantly.")
     for ex in tqdm(available_clean, desc="Building & Extracting CFs"):
-        if cfs_generated >= n_needed:
+        if fail_h / max(fail_h + clean_h, 1) >= target_ratio:
+            logger.info("Target ratio met! Stopping generation.")
             break
             
         cf = make_counterfactual(
@@ -451,6 +427,10 @@ def run_counterfactuals(cfg: dict, model=None, tokenizer=None) -> Path:
             if nn_model is not None:
                 extract_hidden_states(cf, nn_model, tokenizer, cfg, hs_dir, layer_indices)
             
+            # Update running tallies
+            fail_h  += sum(1 for h in cf.get("hops", []) if h.get("label") == 1)
+            clean_h += sum(1 for h in cf.get("hops", []) if h.get("label") == 0)
+            
             # Append to file as a checkpoint!
             with open(augmented_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(cf, ensure_ascii=False) + "\n")
@@ -458,7 +438,9 @@ def run_counterfactuals(cfg: dict, model=None, tokenizer=None) -> Path:
             existing_questions.add(cf["question"].lower())
             cfs_generated += 1
 
+    final_ratio = fail_h / max(fail_h + clean_h, 1)
     logger.info("Counterfactual generation complete. Added %d new examples.", cfs_generated)
+    logger.info("Final hop failure ratio: %.1f%% (%d fail / %d clean)", 100 * final_ratio, fail_h, clean_h)
 
     return augmented_path
 
