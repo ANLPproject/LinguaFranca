@@ -288,9 +288,12 @@ def extract_hidden_states(
     saved_states = {}  # layer_idx → Tensor [seq_len, hidden_dim]
 
     with torch.no_grad():
-        with nn_model.trace(full_text, invoker_args={'truncation': True, 'max_length': 4096}):
-            for li in layer_indices:
-                saved_states[li] = nn_model.model.layers[li].output[0].save()
+        device = next(nn_model.model.parameters()).device
+        # FAST PATH: native HF hidden states takes <1s, nnsight trace takes minutes.
+        outputs = nn_model.model(token_ids.unsqueeze(0).to(device), output_hidden_states=True)
+        for li in layer_indices:
+            # HuggingFace hidden_states: index 0 is embeddings, index 1 is output of layer 0, etc.
+            saved_states[li] = outputs.hidden_states[li + 1].squeeze(0).cpu()
 
     # Mean-pool per hop span, per layer
     n_hops   = len(hop_token_spans)
