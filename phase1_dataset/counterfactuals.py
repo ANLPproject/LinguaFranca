@@ -534,7 +534,7 @@ def run_counterfactuals(cfg: dict, model=None, tokenizer=None) -> Path:
              "label_rejected": 0, "accepted": 0}
     t0 = time.time()
 
-    for c0 in range(0, len(available), chunk_size):
+    for c0 in tqdm(range(0, len(available), chunk_size), desc="Processing Chunks"):
         if ratio() >= target_ratio:
             logger.info("Target ratio met. Stopping.")
             break
@@ -599,12 +599,10 @@ def run_counterfactuals(cfg: dict, model=None, tokenizer=None) -> Path:
 
         stats["chunks"] += 1
         el = time.time() - t0
-        logger.info(
-            "chunk %d | accepted %d (%.0f%% of %d generated) | hop ratio %.1f%% | %.1f min | "
-            "rejects: no_cands=%d no_hops=%d not_induced=%d label=%d",
-            stats["chunks"], stats["accepted"], 100 * stats["accepted"] / max(stats["gen"], 1),
-            stats["gen"], 100 * ratio(), el / 60,
-            stats["no_cands"], stats["no_hops"], stats["not_induced"], stats["label_rejected"])
+        print(
+            f"chunk {stats['chunks']} | accepted {stats['accepted']} ({100 * stats['accepted'] / max(stats['gen'], 1):.0f}% of {stats['gen']} generated) | hop ratio {100 * ratio():.1f}% | {el / 60:.1f} min | "
+            f"rejects: no_cands={stats['no_cands']} no_hops={stats['no_hops']} not_induced={stats['not_induced']} label={stats['label_rejected']}"
+        )
 
     logger.info("Done. Added %d counterfactuals. Final hop failure ratio: %.1f%% (%d fail / %d clean).",
                 stats["accepted"], 100 * ratio(), fail_h, clean_h)
