@@ -1,19 +1,20 @@
 import json
 import torch
 import numpy as np
-import pickle
 from pathlib import Path
 from sklearn.linear_model import LogisticRegression
 from sklearn.neural_network import MLPClassifier
 from sklearn.svm import SVC
-from sklearn.metrics import accuracy_score
-from sklearn.calibration import calibration_curve
+from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import make_pipeline
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.model_selection import train_test_split
 import sys
 
-def extract_X_y_hop_specific(ex_list, hs_dir, layer_idx, target_hop=None):
-    """Extracts X and y, optionally filtering for a specific hop index (0-indexed)."""
-    X, y = [], []
+def extract_data(ex_list, hs_dir, layer_idx=None, target_hop=None):
+    """Extracts X (hidden states), X_text (raw text), and y (labels)."""
+    X_hs, X_text, y = [], [], []
     for ex in ex_list:
         pt_path = hs_dir / f"{ex['id']}.pt"
         if not pt_path.exists():
@@ -26,9 +27,13 @@ def extract_X_y_hop_specific(ex_list, hs_dir, layer_idx, target_hop=None):
             h_idx = hop['hop_idx'] - 1
             if hop.get('label') in (0, 1) and h_idx < pooled.shape[1]:
                 if target_hop is None or h_idx == target_hop:
-                    X.append(pooled[layer_idx, h_idx].detach().numpy())
+                    if layer_idx is not None:
+                        X_hs.append(pooled[layer_idx, h_idx].detach().numpy())
+                    else:
+                        X_hs.append(None)
+                    X_text.append(hop['text'])
                     y.append(hop['label'])
-    return np.array(X), np.array(y)
+    return np.array(X_hs) if layer_idx is not None else None, X_text, np.array(y)
 
 def run_advanced_probing_all_layers(labels_file, hs_dir):
     hs_dir = Path(hs_dir)
@@ -42,63 +47,60 @@ def run_advanced_probing_all_layers(labels_file, hs_dir):
     sample = torch.load(hs_dir / f"{valid_ex[0]['id']}.pt")
     layer_indices = sample.get('layer_indices', list(range(sample['pooled'].shape[0])))
     
-    print("=" * 80)
-    print("ADVANCED PROBING RESULTS (ALL LAYERS)")
-    print("=" * 80)
+    # 1. Base Extraction to calculate Majority Class & TF-IDF
+    _, X_train_txt, y_train = extract_data(train_ex, hs_dir, layer_idx=layer_indices[0])
+    _, X_test_txt, y_test = extract_data(test_ex, hs_dir, layer_idx=layer_indices[0])
+    
+    majority_class_rate = max(np.mean(y_test == 0), np.mean(y_test == 1))
+    print("=" * 110)
+    print(f"MAJORITY CLASS BASELINE: {majority_class_rate:.3f} (This is why Layer 0 was at 0.82!)")
+    print("=" * 110)
+    
+    # TF-IDF Text Baseline
+    tfidf = TfidfVectorizer(max_features=1000)
+    X_train_tfidf = tfidf.fit_transform(X_train_txt)
+    X_test_tfidf = tfidf.transform(X_test_txt)
+    
+    clf_text = LogisticRegression(max_iter=1000, class_weight='balanced')
+    clf_text.fit(X_train_tfidf, y_train)
+    y_pred_txt = clf_text.predict(X_test_tfidf)
+    y_prob_txt = clf_text.predict_proba(X_test_tfidf)[:, 1]
+    
+    print(f"TF-IDF TEXT BASELINE -> Acc: {accuracy_score(y_test, y_pred_txt):.3f} | F1: {f1_score(y_test, y_pred_txt):.3f} | AUROC: {roc_auc_score(y_test, y_prob_txt):.3f}")
+    print("=" * 110)
     
     # Headers
-    print(f"{'Layer':<7} | {'Logistic':<10} | {'Linear SVM':<10} | {'Small MLP':<10} | {'Hop 1 -> Hop 2 (Logistic)':<25}")
-    print("-" * 80)
+    print(f"{'Layer':<7} | {'Logistic (Acc | F1 | AUC)':<30} | {'Linear SVM (Acc)':<18} | {'Small MLP (Acc)':<18}")
+    print("-" * 110)
     
     for li in layer_indices:
-        # 1. Base Extraction
-        X_train, y_train = extract_X_y_hop_specific(train_ex, hs_dir, li)
-        X_test, y_test = extract_X_y_hop_specific(test_ex, hs_dir, li)
+        X_train, _, _ = extract_data(train_ex, hs_dir, layer_idx=li)
+        X_test, _, _ = extract_data(test_ex, hs_dir, layer_idx=li)
+        
         X_train, X_test = np.nan_to_num(X_train), np.nan_to_num(X_test)
         
         if len(X_train) == 0 or len(np.unique(y_train)) < 2:
-            print(f"{li:<7} | {'N/A':<10} | {'N/A':<10} | {'N/A':<10} | {'N/A':<25}")
             continue
             
-        # 2. Architectures
-        lr = LogisticRegression(max_iter=1000).fit(X_train, y_train)
-        acc_lr = accuracy_score(y_test, lr.predict(X_test))
+        # 2. Architectures (WITH STANDARD SCALER!)
+        lr = make_pipeline(StandardScaler(), LogisticRegression(max_iter=1000, class_weight='balanced'))
+        lr.fit(X_train, y_train)
+        y_pred_lr = lr.predict(X_test)
+        y_prob_lr = lr.predict_proba(X_test)[:, 1]
+        acc_lr, f1_lr, auc_lr = accuracy_score(y_test, y_pred_lr), f1_score(y_test, y_pred_lr), roc_auc_score(y_test, y_prob_lr)
         
-        svm = SVC(kernel='linear').fit(X_train, y_train)
+        svm = make_pipeline(StandardScaler(), SVC(kernel='linear', class_weight='balanced'))
+        svm.fit(X_train, y_train)
         acc_svm = accuracy_score(y_test, svm.predict(X_test))
         
-        mlp = MLPClassifier(hidden_layer_sizes=(128,), max_iter=500).fit(X_train, y_train)
+        mlp = make_pipeline(StandardScaler(), MLPClassifier(hidden_layer_sizes=(128,), max_iter=500))
+        mlp.fit(X_train, y_train)
         acc_mlp = accuracy_score(y_test, mlp.predict(X_test))
-        
-        # 3. Cross Hop Generalization (Train Hop 1 -> Test Hop 2)
-        X_train_h1, y_train_h1 = extract_X_y_hop_specific(train_ex, hs_dir, li, target_hop=0)
-        X_test_h2, y_test_h2   = extract_X_y_hop_specific(test_ex, hs_dir, li, target_hop=1)
-        
-        acc_cross_hop = "N/A"
-        if len(X_train_h1) > 0 and len(X_test_h2) > 0 and len(np.unique(y_train_h1)) > 1:
-            X_train_h1, X_test_h2 = np.nan_to_num(X_train_h1), np.nan_to_num(X_test_h2)
-            lr_h1 = LogisticRegression(max_iter=1000).fit(X_train_h1, y_train_h1)
-            acc_cross_hop = f"{accuracy_score(y_test_h2, lr_h1.predict(X_test_h2)):.3f}"
             
-        print(f"Layer {li:<1} | {acc_lr:.3f}      | {acc_svm:.3f}      | {acc_mlp:.3f}      | {acc_cross_hop}")
+        print(f"Layer {li:<1} | {acc_lr:.3f}  | {f1_lr:.3f} | {auc_lr:.3f}          | {acc_svm:.3f}              | {acc_mlp:.3f}")
         
-    # We can print calibration for just the best layer (11) as an example to not spam output
-    print("\n" + "=" * 80)
-    print("CALIBRATION CURVE FOR BEST LAYER (11) using Logistic Regression")
-    print("=" * 80)
-    X_train_11, y_train_11 = extract_X_y_hop_specific(train_ex, hs_dir, 11)
-    X_test_11, y_test_11 = extract_X_y_hop_specific(test_ex, hs_dir, 11)
-    
-    if len(X_train_11) > 0:
-        lr_11 = LogisticRegression(max_iter=1000).fit(np.nan_to_num(X_train_11), y_train_11)
-        probs = lr_11.predict_proba(np.nan_to_num(X_test_11))[:, 1]
-        prob_true, prob_pred = calibration_curve(y_test_11, probs, n_bins=5)
-        
-        print(f"{'Predicted Probability Bucket':<30} | {'Actual Observed Failure Rate'}")
-        print("-" * 60)
-        for pred, true in zip(prob_pred, prob_true):
-            print(f"~ {pred*100:05.2f}% chance of failure       | {true*100:05.2f}% actually failed")
-            
+    print("=" * 110)
+
 if __name__ == "__main__":
     if len(sys.argv) < 3:
         print("Usage: python advanced_probing.py <labels_jsonl> <hs_dir>")
