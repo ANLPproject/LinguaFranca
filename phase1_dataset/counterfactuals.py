@@ -54,13 +54,16 @@ import json
 import logging
 import random
 import sys
+import time
+import contextlib
+from types import SimpleNamespace
 from pathlib import Path
 from typing import Optional
 
 import yaml
 from tqdm import tqdm
 
-from phase1_dataset.label_hops import label_example
+from phase1_dataset.label_hops import label_example, make_llm_judge
 from utils.matching import EntityMatcher
 from utils.wikidata_aliases import load_alias_table
 
@@ -71,20 +74,27 @@ logger = logging.getLogger(__name__)
 # Entity vocabulary builder
 # ─────────────────────────────────────────────────────────────────────────────
 
-def build_entity_vocab(examples: list[dict]) -> dict[int, list[str]]:
+def build_entity_vocab(examples: list[dict], tokenizer=None) -> dict[int, list[str]]:
     """
     Collect entry entities from the dataset to use as substitutions.
-    This ensures we swap like-for-like (e.g. movies for movies) rather than
-    random dates or nationalities.
+    Like-for-like swaps (titles for titles), bucketed by REAL token count.
+
+    NOTE: make_counterfactual() looks this dict up with the tokenizer's token
+    count, so the buckets must be keyed the same way.  (The previous version
+    keyed by whitespace word count, so the lookup hit the wrong bucket and most
+    examples found few or no candidates.)
     """
     vocab: dict[int, list[str]] = {}
     for ex in examples:
         e = find_entry_entity(ex["question"], ex.get("reasoning_graph", []))
-        if e:
-            n = len(e.split())   # rough token count
-            vocab.setdefault(n, []).append(e)
-    # De-duplicate within each bucket
-    return {k: list(set(v)) for k, v in vocab.items()}
+        if not e:
+            continue
+        if tokenizer is not None:
+            n = len(tokenizer.encode(e, add_special_tokens=False))
+        else:
+            n = len(e.split())
+        vocab.setdefault(n, []).append(e)
+    return {k: sorted(set(v)) for k, v in vocab.items()}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -317,131 +327,287 @@ def _validate_induces_failure(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Batched candidate generation (speed)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@contextlib.contextmanager
+def _no_judge(matcher):
+    """Temporarily disable the LLM judge (fast tiers only)."""
+    saved = matcher.llm_judge
+    matcher.llm_judge = None
+    try:
+        yield
+    finally:
+        matcher.llm_judge = saved
+
+
+def batched_generate(prompts, model, tokenizer, max_new_tokens=160, bs=8):
+    """
+    Greedy generation for many prompts at once (left-padded, length-sorted so
+    batches waste little padding).  Returns decoded new text, in input order.
+    """
+    import torch
+    res = [None] * len(prompts)
+    order = sorted(range(len(prompts)), key=lambda i: len(prompts[i]))
+    for s in range(0, len(order), bs):
+        idx = order[s:s + bs]
+        enc = tokenizer([prompts[i] for i in idx], return_tensors="pt", padding=True).to(model.device)
+        with torch.no_grad():
+            out = model.generate(
+                **enc,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                pad_token_id=tokenizer.pad_token_id,
+            )
+        plen = enc["input_ids"].shape[1]
+        for j, i in enumerate(idx):
+            res[i] = tokenizer.decode(out[j][plen:], skip_special_tokens=True)
+    return res
+
+
+def propose_candidates(clean_example, entity_vocab, tokenizer, rng, max_attempts, banned_questions):
+    """
+    Build up to `max_attempts` token-length-matched substitution candidates for
+    one clean example.  No model calls here.  Each candidate is a dict.
+    """
+    question  = clean_example["question"]
+    graph     = clean_example.get("reasoning_graph", [])
+    entry_ent = find_entry_entity(question, graph)
+    if not entry_ent:
+        return []
+
+    token_count = len(tokenizer.encode(entry_ent, add_special_tokens=False))
+    q_lower     = question.lower()
+    pool = [
+        e for e in entity_vocab.get(token_count, [])
+        if e.lower() != entry_ent.lower() and e.lower() not in q_lower
+    ]
+    rng.shuffle(pool)
+
+    cands = []
+    for sub in pool:
+        if len(cands) >= max_attempts:
+            break
+        if not same_token_length(entry_ent, sub, tokenizer):
+            continue
+        cf_q = question.replace(entry_ent, sub, 1)
+        if cf_q == question or cf_q.lower() in banned_questions:
+            continue
+        cands.append({
+            "cf_question": cf_q, "substitute": sub,
+            "entry_entity": entry_ent, "token_count": token_count,
+        })
+    return cands
+
+
+def _build_cf_record(clean_example, cand, prompt, gen_text, hop_spans, pred_ans, tokenizer):
+    from phase1_dataset.generate_cot import parse_predicted_answer  # noqa: F401
+    cf = copy.deepcopy(clean_example)
+    cf["id"]               = clean_example["id"] + "_cf"
+    cf["question"]         = cand["cf_question"]
+    cf["prompt"]           = prompt
+    cf["generated_cot"]    = gen_text
+    cf["hop_spans"]        = hop_spans
+    cf["predicted_answer"] = pred_ans
+    cf["is_counterfactual"] = True
+    cf["clean_pair_id"]    = clean_example["id"]
+    aligned = None
+    if clean_example.get("prompt"):
+        aligned = (len(tokenizer(clean_example["prompt"]).input_ids)
+                   == len(tokenizer(prompt).input_ids))
+    cf["counterfactual_swap"] = {
+        "original_entity":    cand["entry_entity"],
+        "substituted_entity": cand["substitute"],
+        "token_count":        cand["token_count"],
+        "target_fail_hop":    1,
+        # Phase 2 (activation patching) should keep only pairs where this is True
+        "prompt_token_aligned": aligned,
+    }
+    return cf
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Top-level runner
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_counterfactuals(cfg: dict, model=None, tokenizer=None) -> Path:
     """
-    Generate counterfactual examples to balance failure ratio.
-    Returns path to augmented.jsonl.
+    Generate counterfactual examples until the HOP-level failure ratio reaches
+    cf_cfg["target_failure_ratio"].  Returns path to augmented.jsonl.
+
+    Speed design: candidates for `chunk_size` examples are validated together
+    with batched generation, one candidate per example per round; only examples
+    still unresolved go on to the next round.  The run is resumable (records
+    are appended to augmented.jsonl as they are accepted) and can stop itself
+    after cf_cfg["max_minutes"] so a Kaggle session is never lost.
     """
+    from phase1_dataset.generate_cot import (
+        build_prompt, parse_hop_spans, parse_predicted_answer, extract_hidden_states,
+    )
+
     raw_dir   = Path(cfg["data"]["raw_dir"])
     match_cfg = cfg["matching"]
     cf_cfg    = cfg["counterfactuals"]
-    seed      = cfg.get("seed", 42)
-    rng       = random.Random(seed)
+    rng       = random.Random(cfg.get("seed", 42))
+
+    max_attempts = cf_cfg.get("max_substitution_attempts", 3)
+    chunk_size   = cf_cfg.get("chunk_size", 32)
+    gen_bs       = cf_cfg.get("gen_batch_size", 8)
+    max_new      = cf_cfg.get("max_new_tokens", 160)
+    max_minutes  = cf_cfg.get("max_minutes")
+    deadline     = time.time() + 60 * max_minutes if max_minutes else None
+    target_ratio = cf_cfg.get("target_failure_ratio", 0.45)
 
     labeled_path   = raw_dir / "2wikimultihopqa" / "labeled.jsonl"
     augmented_path = raw_dir / "2wikimultihopqa" / "augmented.jsonl"
-
     if not labeled_path.exists():
         raise FileNotFoundError(f"{labeled_path} not found — run label_hops.py first.")
 
     with open(labeled_path, encoding="utf-8") as f:
         examples = [json.loads(line) for line in f]
 
-    # Split into fully-clean examples (probe positive class)
     clean_examples = [
         ex for ex in examples
         if ex.get("first_fail_hop") is None
         and all(h["label"] == 0 for h in ex.get("hops", []))
     ]
-    
-    # Load existing counterfactuals if we are resuming from a checkpoint
-    existing_counterfactuals = []
+
+    existing_cfs = []
     if augmented_path.exists():
         with open(augmented_path, "r", encoding="utf-8") as f:
-            all_aug = [json.loads(l) for l in f]
-        existing_counterfactuals = [ex for ex in all_aug if ex.get("is_counterfactual", False)]
-        logger.info("Found existing augmented.jsonl checkpoint with %d counterfactuals.", len(existing_counterfactuals))
+            existing_cfs = [j for j in (json.loads(l) for l in f) if j.get("is_counterfactual", False)]
+        logger.info("Resuming: %d counterfactuals already in augmented.jsonl.", len(existing_cfs))
     else:
-        # If no checkpoint exists, initialize it with the base labeled examples
         with open(augmented_path, "w", encoding="utf-8") as f:
             for ex in examples:
                 f.write(json.dumps(ex, ensure_ascii=False) + "\n")
 
-    # Dynamic stopping rule variables
-    all_current_data = examples + existing_counterfactuals
-    fail_h  = sum(1 for e in all_current_data for h in e.get("hops", []) if h.get("label") == 1)
-    clean_h = sum(1 for e in all_current_data for h in e.get("hops", []) if h.get("label") == 0)
-    target_ratio = cf_cfg.get("target_failure_ratio", 0.45)
+    def _count(data):
+        fh = sum(1 for e in data for h in e.get("hops", []) if h.get("label") == 1)
+        ch = sum(1 for e in data for h in e.get("hops", []) if h.get("label") == 0)
+        return fh, ch
 
-    current_ratio = fail_h / max(fail_h + clean_h, 1)
-    logger.info("Starting ratio: %.1f%% (%d fail / %d clean hops). Target: %.0f%%", 
-                100 * current_ratio, fail_h, clean_h, 100 * target_ratio)
+    fail_h, clean_h = _count(examples + existing_cfs)
+    ratio = lambda: fail_h / max(fail_h + clean_h, 1)
+    logger.info("Starting hop ratio: %.1f%% (%d fail / %d clean). Target: %.0f%%",
+                100 * ratio(), fail_h, clean_h, 100 * target_ratio)
+    if ratio() >= target_ratio:
+        logger.info("Target already met. Nothing to generate.")
+        return augmented_path
 
-    # Load matching tools
+    # Model / tokenizer (tokenizer is needed for the vocab, so load first)
+    if model is None:
+        from phase1_dataset.generate_cot import load_model_and_tokenizer
+        model, tokenizer = load_model_and_tokenizer(cfg)
+    tokenizer.padding_side = "left"
+
     aliases = load_alias_table(match_cfg["wikidata_aliases_path"])
     matcher = EntityMatcher(
         aliases=aliases,
         sbert_model_name=match_cfg["sbert_model"],
         sbert_threshold=match_cfg["sbert_threshold"],
+        # Same judge policy as run_labeling in the Phase 1 notebook, so CF labels
+        # follow the same rules as the original labels.
+        llm_judge=make_llm_judge(model, tokenizer, device=model.device)
+                  if match_cfg.get("use_llm_fallback", False) else None,
+        llm_budget=match_cfg.get("llm_fallback_budget", 0.05),
     )
 
-    entity_vocab = build_entity_vocab(examples)
+    entity_vocab = build_entity_vocab(examples, tokenizer)
+    logger.info("Entity vocab: %d entities across %d token-length buckets.",
+                sum(len(v) for v in entity_vocab.values()), len(entity_vocab))
 
-    # Load model if not provided (needed for validation and extraction)
-    if model is None:
-        from phase1_dataset.generate_cot import load_model_and_tokenizer
-        model, tokenizer = load_model_and_tokenizer(cfg)
-
-    try:
-        from nnsight import LanguageModel as NNsightLM
-        nn_model = NNsightLM(model, tokenizer=tokenizer)
-    except ImportError:
-        nn_model = None
-        logger.warning("nnsight not installed — skipping hidden state extraction.")
-
+    # nnsight is not needed on this path (extraction uses native HF hidden states)
+    hs_model = SimpleNamespace(model=model)
     n_layers = model.config.num_hidden_layers
     layers_cfg = cfg["hidden_states"].get("layers", "all")
     layer_indices = list(range(n_layers)) if layers_cfg == "all" else layers_cfg
-
-    from phase1_dataset.generate_cot import extract_hidden_states
     hs_dir = Path(cfg["data"]["hidden_states_dir"])
 
-    # Shuffle clean examples, but exclude ones we've already used for counterfactuals
-    used_clean_ids = {cf["clean_pair_id"] for cf in existing_counterfactuals}
-    available_clean = [ex for ex in clean_examples if ex["id"] not in used_clean_ids]
-    rng.shuffle(available_clean)
+    used_clean = {c["clean_pair_id"] for c in existing_cfs}
+    available = [ex for ex in clean_examples if ex["id"] not in used_clean]
+    rng.shuffle(available)
+    existing_q = {e["question"].lower() for e in examples} | {c["question"].lower() for c in existing_cfs}
+    sys_prompt = cfg["generation"]["system_prompt"]
 
-    cfs_generated = 0
-    existing_questions = {ex["question"].lower() for ex in examples} | {cf["question"].lower() for cf in existing_counterfactuals}
+    stats = {"chunks": 0, "no_cands": 0, "gen": 0, "no_hops": 0, "not_induced": 0,
+             "label_rejected": 0, "accepted": 0}
+    t0 = time.time()
 
-    logger.info("Starting counterfactual generation. Checkpoints will be appended to augmented.jsonl instantly.")
-    for ex in tqdm(available_clean, desc="Building & Extracting CFs"):
-        if fail_h / max(fail_h + clean_h, 1) >= target_ratio:
-            logger.info("Target ratio met! Stopping generation.")
+    for c0 in range(0, len(available), chunk_size):
+        if ratio() >= target_ratio:
+            logger.info("Target ratio met. Stopping.")
             break
-            
-        cf = make_counterfactual(
-            ex, entity_vocab, tokenizer, matcher, model, cfg, rng
-        )
-        
-        if cf is not None:
-            if cf["question"].lower() in existing_questions:
-                continue # Deduplication
-                
-            # Process immediately
-            labeled_cf = label_example(cf, matcher)
-            cf.update(labeled_cf)
-            if nn_model is not None:
-                extract_hidden_states(cf, nn_model, tokenizer, cfg, hs_dir, layer_indices)
-            
-            # Update running tallies
-            fail_h  += sum(1 for h in cf.get("hops", []) if h.get("label") == 1)
-            clean_h += sum(1 for h in cf.get("hops", []) if h.get("label") == 0)
-            
-            # Append to file as a checkpoint!
-            with open(augmented_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(cf, ensure_ascii=False) + "\n")
-            
-            existing_questions.add(cf["question"].lower())
-            cfs_generated += 1
+        if deadline and time.time() > deadline:
+            logger.info("max_minutes reached — stopping cleanly (run is resumable).")
+            break
 
-    final_ratio = fail_h / max(fail_h + clean_h, 1)
-    logger.info("Counterfactual generation complete. Added %d new examples.", cfs_generated)
-    logger.info("Final hop failure ratio: %.1f%% (%d fail / %d clean)", 100 * final_ratio, fail_h, clean_h)
+        chunk = available[c0:c0 + chunk_size]
+        pending = []
+        for ex in chunk:
+            cands = propose_candidates(ex, entity_vocab, tokenizer, rng, max_attempts, existing_q)
+            if cands:
+                pending.append((ex, cands))
+            else:
+                stats["no_cands"] += 1
 
+        for attempt in range(max_attempts):
+            if not pending or ratio() >= target_ratio:
+                break
+            jobs = [(ex, cands[attempt]) for ex, cands in pending if attempt < len(cands)]
+            if not jobs:
+                break
+            prompts = [build_prompt(c["cf_question"], ex.get("context", ""), sys_prompt, tokenizer)
+                       for ex, c in jobs]
+            texts = batched_generate(prompts, model, tokenizer, max_new, gen_bs)
+            stats["gen"] += len(jobs)
+
+            done_ids = set()
+            for (ex, cand), prompt, text in zip(jobs, prompts, texts):
+                if ratio() >= target_ratio:
+                    break
+                hop_spans = parse_hop_spans(text)
+                if not hop_spans:                      # format failure, not a reasoning failure
+                    stats["no_hops"] += 1
+                    continue
+                gold0 = (ex.get("reasoning_graph") or [{}])[0].get("gold_entity", "")
+                with _no_judge(matcher):               # cheap first screen: fast tiers only
+                    induced = not matcher.match(gold0, hop_spans[0]["text"]).matched
+                if not induced:
+                    stats["not_induced"] += 1
+                    continue
+                if cand["cf_question"].lower() in existing_q:
+                    continue
+
+                cf = _build_cf_record(ex, cand, prompt, text, hop_spans,
+                                      parse_predicted_answer(text), tokenizer)
+                cf.update(label_example(cf, matcher))  # full labeling, with the judge
+                if cf.get("first_fail_hop") != 1:      # judge/bipartite says hop 1 was fine
+                    stats["label_rejected"] += 1
+                    continue
+
+                extract_hidden_states(cf, hs_model, tokenizer, cfg, hs_dir, layer_indices)
+                with open(augmented_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(cf, ensure_ascii=False) + "\n")
+
+                existing_q.add(cf["question"].lower())
+                fail_h  += sum(1 for h in cf["hops"] if h["label"] == 1)
+                clean_h += sum(1 for h in cf["hops"] if h["label"] == 0)
+                stats["accepted"] += 1
+                done_ids.add(ex["id"])
+            pending = [(ex, c) for ex, c in pending if ex["id"] not in done_ids]
+
+        stats["chunks"] += 1
+        el = time.time() - t0
+        logger.info(
+            "chunk %d | accepted %d (%.0f%% of %d generated) | hop ratio %.1f%% | %.1f min | "
+            "rejects: no_cands=%d no_hops=%d not_induced=%d label=%d",
+            stats["chunks"], stats["accepted"], 100 * stats["accepted"] / max(stats["gen"], 1),
+            stats["gen"], 100 * ratio(), el / 60,
+            stats["no_cands"], stats["no_hops"], stats["not_induced"], stats["label_rejected"])
+
+    logger.info("Done. Added %d counterfactuals. Final hop failure ratio: %.1f%% (%d fail / %d clean).",
+                stats["accepted"], 100 * ratio(), fail_h, clean_h)
     return augmented_path
 
 

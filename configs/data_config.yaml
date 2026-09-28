@@ -112,9 +112,12 @@ hidden_states:
 # ── Counterfactuals ──────────────────────────────────────────────────────────
 counterfactuals:
   target_failure_ratio: 0.45    # aim for 45 % failure examples (near 50/50)
-  max_substitution_attempts: 5 # tries per example before giving up
+  max_substitution_attempts: 3  # tries per example before giving up
+  chunk_size: 32                # process in batches of 32 candidates
+  gen_batch_size: 4             # safe size for Kaggle T4x2
+  max_new_tokens: 160           # cap token generation for speed
+  max_minutes: 600              # cleanly stop before Kaggle 12-hour timeout
   validate_induced_failure: true
-  same_semantic_category: true  # substitutes must be the same entity type
 
 # ── Reproducibility ──────────────────────────────────────────────────────────
 seed: 42
