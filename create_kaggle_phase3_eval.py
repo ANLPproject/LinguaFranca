@@ -157,6 +157,18 @@ cells = [
             "    shutil.copytree(src_hs, dest_hs, dirs_exist_ok=True)\n",
             "    print(\"Done copying original hidden states!\")\n",
             "    print(f\"Total .pt files copied: {len(list(dest_hs.glob('*.pt')))}\")\n",
+            "    \n",
+            "    # Upload original hidden states to Hugging Face IMMEDIATELY so they are safe\n",
+            "    if 'YOUR_HF_TOKEN_HERE' not in os.environ.get('HF_TOKEN', ''):\n",
+            "        from huggingface_hub import HfApi\n",
+            "        api = HfApi()\n",
+            "        repo_id = os.environ.get('HF_REPO_ID')\n",
+            "        print(f\"Backing up original hidden states to {repo_id} before CF generation...\")\n",
+            "        try:\n",
+            "            api.upload_folder(folder_path='/kaggle/working/data/hidden_states', repo_id=repo_id, repo_type='dataset', path_in_repo='data/hidden_states')\n",
+            "            print(\"Original hidden states safely backed up to Hugging Face!\")\n",
+            "        except Exception as e:\n",
+            "            print(f\"Could not upload hidden states: {e}\")\n",
             "else:\n",
             "    print(\"Could not find hidden_states in /kaggle/input! Did you include it in your zip?\")\n"
         ]
