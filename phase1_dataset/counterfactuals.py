@@ -347,18 +347,28 @@ def run_counterfactuals(cfg: dict, model=None, tokenizer=None) -> Path:
         if ex.get("first_fail_hop") is None
         and all(h["label"] == 0 for h in ex.get("hops", []))
     ]
-    fail_examples = [ex for ex in examples if ex.get("first_fail_hop") is not None]
+    
+    # Calculate balance based on HOPS, not examples!
+    total_hops = sum(1 for ex in examples for h in ex.get("hops", []) if h.get("label") in (0, 1))
+    fail_hops = sum(1 for ex in examples for h in ex.get("hops", []) if h.get("label") == 1)
+    clean_hops = total_hops - fail_hops
 
-    current_fail_ratio = len(fail_examples) / max(len(examples), 1)
+    current_fail_ratio = fail_hops / max(total_hops, 1)
     target_ratio       = cf_cfg.get("target_failure_ratio", 0.45)
 
-    # Correct formula: (target_ratio / clean_ratio) * clean_count - fail_count
-    # To reach exactly target_ratio, we need:
-    # (F + x) / (C + F + x) = target_ratio  =>  x = (target_ratio / (1 - target_ratio)) * C - F
-    n_needed_total = max(
-        0,
-        int((target_ratio / (1.0 - target_ratio)) * len(clean_examples)) - len(fail_examples),
-    )
+    # Each CF adds exactly 1 failed hop, and ~1 clean hop.
+    # (F + x) / (C + F + 2x) = target_ratio
+    # F + x = target_ratio * C + target_ratio * F + 2 * target_ratio * x
+    # x (1 - 2*target_ratio) = target_ratio * C - (1 - target_ratio) * F
+    # x = (target_ratio * C - (1 - target_ratio) * F) / (1 - 2*target_ratio)
+    if target_ratio == 0.5:
+        n_needed_total = clean_hops - fail_hops
+    else:
+        num = target_ratio * clean_hops - (1 - target_ratio) * fail_hops
+        den = 1.0 - 2.0 * target_ratio
+        n_needed_total = int(num / den) if den != 0 else clean_hops - fail_hops
+        
+    n_needed_total = max(0, min(n_needed_total, len(clean_examples)))
     
     # Load existing counterfactuals if we are resuming from a checkpoint
     existing_counterfactuals = []
@@ -377,7 +387,7 @@ def run_counterfactuals(cfg: dict, model=None, tokenizer=None) -> Path:
     
     logger.info(
         "Current failure ratio: %.1f%% (%d/%d) — target: %.0f%%. Need %d total CFs, %d remaining.",
-        100 * current_fail_ratio, len(fail_examples), len(examples),
+        100 * current_fail_ratio, fail_hops, total_hops,
         100 * target_ratio, n_needed_total, n_needed
     )
 
