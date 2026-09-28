@@ -321,7 +321,7 @@ def _validate_induces_failure(
 # Top-level runner
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_counterfactuals(cfg: dict, model=None, tokenizer=None) -> Path:
+def run_counterfactuals(cfg: dict, model=None, tokenizer=None, hf_token=None) -> Path:
     """
     Generate counterfactual examples to balance failure ratio.
     Returns path to augmented.jsonl.
