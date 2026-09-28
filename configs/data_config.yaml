@@ -112,7 +112,7 @@ hidden_states:
 # ── Counterfactuals ──────────────────────────────────────────────────────────
 counterfactuals:
   target_failure_ratio: 0.45    # aim for 45 % failure examples (near 50/50)
-  max_substitution_attempts: 25 # tries per example before giving up
+  max_substitution_attempts: 5 # tries per example before giving up
   validate_induced_failure: true
   same_semantic_category: true  # substitutes must be the same entity type
 
