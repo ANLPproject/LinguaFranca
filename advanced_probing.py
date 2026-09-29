@@ -201,7 +201,6 @@ def run_advanced_probing_all_layers(labels_file, hs_dir):
     # We already have Hop 1 logistic regression trained (clf_h1). Let's test it on Hop 2.
     if np.sum(train_h1_mask) > 0 and (np.sum(train_h2_mask) > 0 or np.sum(test_h2_mask) > 0):
         # Pool all hop 2 examples we have
-        h2_mask = (train_hop_idx == 1) | (test_hop_idx == 1)
         # We need to extract them from the original train/test mix, let's just grab them:
         X_all_hs, _, y_all, _, hop_all, _ = extract_data(valid_ex, hs_dir, layer_idx=best_layer_idx)
         
