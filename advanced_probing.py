@@ -181,6 +181,55 @@ def run_advanced_probing_all_layers(labels_file, hs_dir):
         print(f"Acc: {accuracy_score(y_test_h1, y_pred_h1):.3f} | AUROC: {roc_auc_score(y_test_h1, y_prob_h1):.3f}")
     else:
         print("\n[Control] Not enough Hop-1 examples to run Hop-1 Only check.")
+
+    # 3. Cross-Hop Generalization (Train Hop 1, Test Hop 2)
+    train_h2_mask = train_hop_idx == 1
+    test_h2_mask = test_hop_idx == 1
+    
+    # We already have Hop 1 logistic regression trained (clf_h1). Let's test it on Hop 2.
+    if np.sum(train_h1_mask) > 0 and (np.sum(train_h2_mask) > 0 or np.sum(test_h2_mask) > 0):
+        # Pool all hop 2 examples we have
+        h2_mask = (train_hop_idx == 1) | (test_hop_idx == 1)
+        # We need to extract them from the original train/test mix, let's just grab them:
+        X_all_hs, _, y_all, _, hop_all = extract_data(valid_ex, hs_dir, layer_idx=best_layer_idx)
+        
+        h2_mask_all = hop_all == 1
+        X_all_h2 = X_all_hs[h2_mask_all]
+        y_all_h2 = y_all[h2_mask_all]
+        
+        if len(y_all_h2) > 0:
+            y_pred_h2 = clf_h1.predict(X_all_h2)
+            y_prob_h2 = clf_h1.predict_proba(X_all_h2)[:, 1]
+            
+            print(f"\n[Control] CROSS-HOP GENERALIZATION (Train Hop 1 -> Test Hop 2, Layer {best_layer_idx})")
+            print(f"Test N={len(y_all_h2)}")
+            print(f"Acc: {accuracy_score(y_all_h2, y_pred_h2):.3f} | AUROC: {roc_auc_score(y_all_h2, y_prob_h2):.3f}")
+    
+    # 4. Bootstrap/Multiple-Seed Error Bars (Layers 9-13)
+    print(f"\n[Control] MULTIPLE-SEED BOOTSTRAP (Layers 8-14)")
+    print(f"{'Layer':<7} | {'Mean Acc':<10} | {'Std Dev':<10}")
+    print("-" * 40)
+    
+    seeds = [42, 1337, 2026, 9999, 12345]
+    layers_to_test = [l for l in layer_indices if 8 <= l <= 14]
+    
+    for li in layers_to_test:
+        X_tr, _, _, _, _ = extract_data(train_ex, hs_dir, layer_idx=li)
+        X_te, _, _, _, _ = extract_data(test_ex, hs_dir, layer_idx=li)
+        
+        accs = []
+        for s in seeds:
+            clf_boot = make_pipeline(StandardScaler(), LogisticRegression(max_iter=1000, class_weight='balanced', random_state=s))
+            # Resample train data
+            np.random.seed(s)
+            indices = np.random.choice(len(X_tr), len(X_tr), replace=True)
+            clf_boot.fit(X_tr[indices], y_train[indices])
+            accs.append(accuracy_score(y_test, clf_boot.predict(X_te)))
+            
+        mean_acc = np.mean(accs)
+        std_acc = np.std(accs)
+        print(f"Layer {li:<1} | {mean_acc:.3f}      | ±{std_acc:.3f}")
+    
     print("=" * 140)
 
 if __name__ == "__main__":
