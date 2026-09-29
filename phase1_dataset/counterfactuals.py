@@ -430,7 +430,7 @@ def _build_cf_record(clean_example, cand, prompt, gen_text, hop_spans, pred_ans,
 # Top-level runner
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_counterfactuals(cfg: dict, model=None, tokenizer=None) -> Path:
+def run_counterfactuals(cfg: dict, model=None, tokenizer=None, hf_token=None) -> Path:
     """
     Generate counterfactual examples until the HOP-level failure ratio reaches
     cf_cfg["target_failure_ratio"].  Returns path to augmented.jsonl.
