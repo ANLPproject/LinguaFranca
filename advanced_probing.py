@@ -95,12 +95,13 @@ def run_advanced_probing_all_layers(labels_file, hs_dir):
     print("=" * 140)
     
     # Headers
-    print(f"{'Layer':<7} | {'Logistic All (Acc|F1|AUC)':<27} | {'Logistic Natural-Only (Acc|AUC)':<33} | {'Linear SVM (Acc)':<18} | {'Small MLP (Acc)':<18}")
-    print("-" * 140)
+    # print(f"{'Layer':<7} | {'Logistic All (Acc|F1|AUC)':<27} | {'Logistic Natural-Only (Acc|AUC)':<33} | {'Linear SVM (Acc)':<18} | {'Small MLP (Acc)':<18}")
+    # print("-" * 140)
     
     natural_mask = ~is_cf_test
     
-    for li in layer_indices:
+    # Skipping the first massive table as we already have this data!
+    # for li in layer_indices:
         X_train, _, _, _, _, _ = extract_data(train_ex, hs_dir, layer_idx=li)
         X_test, _, _, _, _, _ = extract_data(test_ex, hs_dir, layer_idx=li)
         X_train, X_test = np.nan_to_num(X_train), np.nan_to_num(X_test)
