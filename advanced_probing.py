@@ -132,6 +132,47 @@ def run_advanced_probing_all_layers(labels_file, hs_dir):
             
         print(f"Layer {li:<1} | {acc_lr:.3f} | {f1_lr:.3f} | {auc_lr:.3f}          | {acc_nat:.3f} | {auc_nat:.3f}                       | {acc_svm:.3f}              | {acc_mlp:.3f}")
         
+
+    # =====================================================================
+    # 5-FOLD GROUPED CROSS-VALIDATION
+    # =====================================================================
+    print("\n" + "=" * 140)
+    print("5-FOLD GROUPED CROSS-VALIDATION (Logistic Regression)")
+    print("=" * 140)
+    from sklearn.model_selection import GroupKFold
+    
+    gkf = GroupKFold(n_splits=5)
+    print(f"{'Layer':<7} | {'Mean Acc':<10} | {'Std Acc':<10} | {'Mean AUROC':<10} | {'Std AUROC':<10}")
+    print("-" * 65)
+    
+    for li in layer_indices:
+        X_all, _, y_all, _, _ = extract_data(valid_ex, hs_dir, layer_idx=li)
+        X_all = np.nan_to_num(X_all)
+        
+        if len(X_all) == 0:
+            continue
+            
+        acc_scores = []
+        auc_scores = []
+        
+        for tr_idx, te_idx in gkf.split(X_all, y_all, groups=groups):
+            X_tr, X_te = X_all[tr_idx], X_all[te_idx]
+            y_tr, y_te = y_all[tr_idx], y_all[te_idx]
+            
+            if len(np.unique(y_tr)) < 2 or len(np.unique(y_te)) < 2:
+                continue
+                
+            clf = make_pipeline(StandardScaler(), LogisticRegression(max_iter=1000, class_weight='balanced'))
+            clf.fit(X_tr, y_tr)
+            y_pred = clf.predict(X_te)
+            y_prob = clf.predict_proba(X_te)[:, 1]
+            
+            acc_scores.append(accuracy_score(y_te, y_pred))
+            auc_scores.append(roc_auc_score(y_te, y_prob))
+            
+        if acc_scores:
+            print(f"Layer {li:<1} | {np.mean(acc_scores):.3f}      | ±{np.std(acc_scores):.3f}   | {np.mean(auc_scores):.3f}       | ±{np.std(auc_scores):.3f}")
+    
     print("=" * 140)
 
     # =====================================================================
