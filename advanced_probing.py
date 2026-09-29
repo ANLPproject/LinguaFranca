@@ -14,8 +14,8 @@ from sklearn.model_selection import GroupShuffleSplit
 import sys
 
 def extract_data(ex_list, hs_dir, layer_idx=None):
-    """Extracts X (hidden states), X_text (raw text), y (labels), and is_counterfactual flag."""
-    X_hs, X_text, y, is_cf, hop_idxs = [], [], [], [], []
+    """Extracts X (hidden states), X_text (raw text), y (labels), is_counterfactual, hop_idxs, and group_ids."""
+    X_hs, X_text, y, is_cf, hop_idxs, group_ids = [], [], [], [], [], []
     for ex in ex_list:
         pt_path = hs_dir / f"{ex['id']}.pt"
         if not pt_path.exists():
@@ -35,8 +35,9 @@ def extract_data(ex_list, hs_dir, layer_idx=None):
                 y.append(hop['label'])
                 is_cf.append(ex.get("is_counterfactual", False))
                 hop_idxs.append(h_idx)
+                group_ids.append(ex.get("clean_pair_id", ex["id"]))
                 
-    return np.array(X_hs) if layer_idx is not None else None, X_text, np.array(y), np.array(is_cf), np.array(hop_idxs)
+    return np.array(X_hs) if layer_idx is not None else None, X_text, np.array(y), np.array(is_cf), np.array(hop_idxs), np.array(group_ids)
 
 def run_advanced_probing_all_layers(labels_file, hs_dir):
     hs_dir = Path(hs_dir)
@@ -65,8 +66,8 @@ def run_advanced_probing_all_layers(labels_file, hs_dir):
     layer_indices = sample.get('layer_indices', list(range(sample['pooled'].shape[0])))
     
     # Extract base features
-    _, X_train_txt, y_train, _, train_hop_idx = extract_data(train_ex, hs_dir, layer_idx=layer_indices[0])
-    _, X_test_txt, y_test, is_cf_test, test_hop_idx = extract_data(test_ex, hs_dir, layer_idx=layer_indices[0])
+    _, X_train_txt, y_train, _, train_hop_idx, _ = extract_data(train_ex, hs_dir, layer_idx=layer_indices[0])
+    _, X_test_txt, y_test, is_cf_test, test_hop_idx, _ = extract_data(test_ex, hs_dir, layer_idx=layer_indices[0])
     
     majority_class_rate = max(np.mean(y_test == 0), np.mean(y_test == 1))
     print(f"MAJORITY CLASS BASELINE: {majority_class_rate:.3f}")
@@ -100,8 +101,8 @@ def run_advanced_probing_all_layers(labels_file, hs_dir):
     natural_mask = ~is_cf_test
     
     for li in layer_indices:
-        X_train, _, _, _, _ = extract_data(train_ex, hs_dir, layer_idx=li)
-        X_test, _, _, _, _ = extract_data(test_ex, hs_dir, layer_idx=li)
+        X_train, _, _, _, _, _ = extract_data(train_ex, hs_dir, layer_idx=li)
+        X_test, _, _, _, _, _ = extract_data(test_ex, hs_dir, layer_idx=li)
         X_train, X_test = np.nan_to_num(X_train), np.nan_to_num(X_test)
         
         if len(X_train) == 0 or len(np.unique(y_train)) < 2:
@@ -146,7 +147,7 @@ def run_advanced_probing_all_layers(labels_file, hs_dir):
     print("-" * 65)
     
     for li in layer_indices:
-        X_all, _, y_all, _, _ = extract_data(valid_ex, hs_dir, layer_idx=li)
+        X_all, _, y_all, _, _, groups_all = extract_data(valid_ex, hs_dir, layer_idx=li)
         X_all = np.nan_to_num(X_all)
         
         if len(X_all) == 0:
@@ -155,7 +156,7 @@ def run_advanced_probing_all_layers(labels_file, hs_dir):
         acc_scores = []
         auc_scores = []
         
-        for tr_idx, te_idx in gkf.split(X_all, y_all, groups=groups):
+        for tr_idx, te_idx in gkf.split(X_all, y_all, groups=groups_all):
             X_tr, X_te = X_all[tr_idx], X_all[te_idx]
             y_tr, y_te = y_all[tr_idx], y_all[te_idx]
             
@@ -186,8 +187,8 @@ def run_advanced_probing_all_layers(labels_file, hs_dir):
     best_layer_idx = 10 if 10 in layer_indices else layer_indices[len(layer_indices)//2]
     
     print(f"Running controls on Layer {best_layer_idx}")
-    X_train_hs, _, _, _, _ = extract_data(train_ex, hs_dir, layer_idx=best_layer_idx)
-    X_test_hs, _, _, _, _ = extract_data(test_ex, hs_dir, layer_idx=best_layer_idx)
+    X_train_hs, _, _, _, _, _ = extract_data(train_ex, hs_dir, layer_idx=best_layer_idx)
+    X_test_hs, _, _, _, _, _ = extract_data(test_ex, hs_dir, layer_idx=best_layer_idx)
     
     # 1. Shuffled-Label Control for MLP
     mlp = make_pipeline(StandardScaler(), MLPClassifier(hidden_layer_sizes=(128, 64), max_iter=500, random_state=42))
@@ -232,7 +233,7 @@ def run_advanced_probing_all_layers(labels_file, hs_dir):
         # Pool all hop 2 examples we have
         h2_mask = (train_hop_idx == 1) | (test_hop_idx == 1)
         # We need to extract them from the original train/test mix, let's just grab them:
-        X_all_hs, _, y_all, _, hop_all = extract_data(valid_ex, hs_dir, layer_idx=best_layer_idx)
+        X_all_hs, _, y_all, _, hop_all, _ = extract_data(valid_ex, hs_dir, layer_idx=best_layer_idx)
         
         h2_mask_all = hop_all == 1
         X_all_h2 = X_all_hs[h2_mask_all]
@@ -255,8 +256,8 @@ def run_advanced_probing_all_layers(labels_file, hs_dir):
     layers_to_test = [l for l in layer_indices if 8 <= l <= 14]
     
     for li in layers_to_test:
-        X_tr, _, _, _, _ = extract_data(train_ex, hs_dir, layer_idx=li)
-        X_te, _, _, _, _ = extract_data(test_ex, hs_dir, layer_idx=li)
+        X_tr, _, _, _, _, _ = extract_data(train_ex, hs_dir, layer_idx=li)
+        X_te, _, _, _, _, _ = extract_data(test_ex, hs_dir, layer_idx=li)
         
         accs = []
         for s in seeds:
