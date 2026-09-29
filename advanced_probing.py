@@ -102,38 +102,7 @@ def run_advanced_probing_all_layers(labels_file, hs_dir):
     
     # Skipping the first massive table as we already have this data!
     # for li in layer_indices:
-        X_train, _, _, _, _, _ = extract_data(train_ex, hs_dir, layer_idx=li)
-        X_test, _, _, _, _, _ = extract_data(test_ex, hs_dir, layer_idx=li)
-        X_train, X_test = np.nan_to_num(X_train), np.nan_to_num(X_test)
-        
-        if len(X_train) == 0 or len(np.unique(y_train)) < 2:
-            continue
-            
-        lr = make_pipeline(StandardScaler(), LogisticRegression(max_iter=1000, class_weight='balanced'))
-        lr.fit(X_train, y_train)
-        y_pred_lr = lr.predict(X_test)
-        y_prob_lr = lr.predict_proba(X_test)[:, 1]
-        
-        # Mixed metrics
-        acc_lr, f1_lr, auc_lr = accuracy_score(y_test, y_pred_lr), f1_score(y_test, y_pred_lr), roc_auc_score(y_test, y_prob_lr)
-        
-        # Natural-only metrics
-        if np.sum(natural_mask) > 0 and len(np.unique(y_test[natural_mask])) > 1:
-            acc_nat = accuracy_score(y_test[natural_mask], y_pred_lr[natural_mask])
-            auc_nat = roc_auc_score(y_test[natural_mask], y_prob_lr[natural_mask])
-        else:
-            acc_nat, auc_nat = 0.0, 0.0
-            
-        svm = make_pipeline(StandardScaler(), SVC(kernel='linear', class_weight='balanced'))
-        svm.fit(X_train, y_train)
-        acc_svm = accuracy_score(y_test, svm.predict(X_test))
-        
-        mlp = make_pipeline(StandardScaler(), MLPClassifier(hidden_layer_sizes=(128,), max_iter=500))
-        mlp.fit(X_train, y_train)
-        acc_mlp = accuracy_score(y_test, mlp.predict(X_test))
-            
-        print(f"Layer {li:<1} | {acc_lr:.3f} | {f1_lr:.3f} | {auc_lr:.3f}          | {acc_nat:.3f} | {auc_nat:.3f}                       | {acc_svm:.3f}              | {acc_mlp:.3f}")
-        
+    #     pass
 
     # =====================================================================
     # 5-FOLD GROUPED CROSS-VALIDATION
