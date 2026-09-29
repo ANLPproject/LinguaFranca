@@ -134,6 +134,55 @@ def run_advanced_probing_all_layers(labels_file, hs_dir):
         
     print("=" * 140)
 
+    # =====================================================================
+    # EXPERIMENTAL CONTROLS (Hop-1 Only & MLP Shuffled Label)
+    # =====================================================================
+    print("\n" + "=" * 140)
+    print("EXPERIMENTAL CONTROLS")
+    print("=" * 140)
+    
+    # We will pick the best layer based on logistic accuracy on all test data (usually layer 10)
+    best_layer_idx = 10 if 10 in layer_indices else layer_indices[len(layer_indices)//2]
+    
+    print(f"Running controls on Layer {best_layer_idx}")
+    X_train_hs, _, _, _, _ = extract_data(train_ex, hs_dir, layer_idx=best_layer_idx)
+    X_test_hs, _, _, _, _ = extract_data(test_ex, hs_dir, layer_idx=best_layer_idx)
+    
+    # 1. Shuffled-Label Control for MLP
+    mlp = make_pipeline(StandardScaler(), MLPClassifier(hidden_layer_sizes=(128, 64), max_iter=500, random_state=42))
+    
+    # Shuffle labels
+    y_train_shuffled = np.random.permutation(y_train)
+    mlp.fit(X_train_hs, y_train_shuffled)
+    y_pred_mlp_shuf = mlp.predict(X_test_hs)
+    shuf_acc = accuracy_score(y_test, y_pred_mlp_shuf)
+    print(f"[Control] MLP with SHUFFLED LABELS -> Acc: {shuf_acc:.3f} (Should be near chance/majority class)")
+    
+    # 2. Hop-1 Only Check
+    # Filter train and test sets for only hop_idx == 0
+    train_h1_mask = train_hop_idx == 0
+    test_h1_mask = test_hop_idx == 0
+    
+    if np.sum(train_h1_mask) > 0 and np.sum(test_h1_mask) > 0:
+        X_train_hs_h1 = X_train_hs[train_h1_mask]
+        y_train_h1 = y_train[train_h1_mask]
+        X_test_hs_h1 = X_test_hs[test_h1_mask]
+        y_test_h1 = y_test[test_h1_mask]
+        
+        # Train and eval Logistic probe on Hop 1 only
+        clf_h1 = make_pipeline(StandardScaler(), LogisticRegression(max_iter=1000, class_weight='balanced'))
+        clf_h1.fit(X_train_hs_h1, y_train_h1)
+        y_pred_h1 = clf_h1.predict(X_test_hs_h1)
+        y_prob_h1 = clf_h1.predict_proba(X_test_hs_h1)[:, 1]
+        
+        print(f"\n[Control] HOP-1 ONLY LOGISTIC PROBE (Layer {best_layer_idx})")
+        print(f"Train N={len(y_train_h1)}, Test N={len(y_test_h1)}")
+        print(f"Majority Class Rate: {max(np.mean(y_test_h1 == 0), np.mean(y_test_h1 == 1)):.3f}")
+        print(f"Acc: {accuracy_score(y_test_h1, y_pred_h1):.3f} | AUROC: {roc_auc_score(y_test_h1, y_prob_h1):.3f}")
+    else:
+        print("\n[Control] Not enough Hop-1 examples to run Hop-1 Only check.")
+    print("=" * 140)
+
 if __name__ == "__main__":
     if len(sys.argv) < 3:
         print("Usage: python advanced_probing.py <labels_jsonl> <hs_dir>")
