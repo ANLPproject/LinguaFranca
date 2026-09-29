@@ -243,6 +243,58 @@ def run_advanced_probing_all_layers(labels_file, hs_dir):
     
     print("=" * 140)
 
+
+    # =====================================================================
+    # QUALITATIVE ERROR ANALYSIS
+    # =====================================================================
+    print("\n" + "=" * 140)
+    print("QUALITATIVE PROBE ANALYSIS (Top 10 Most Confident Hop-1 Failure Predictions)")
+    print("=" * 140)
+    
+    if np.sum(test_h1_mask) > 0:
+        qual_results = []
+        # We need the original text. Let's zip X_test_txt with the predictions.
+        # test_h1_mask masks the flattened array. 
+        # But we want the Question and Gold Entity from test_ex.
+        # Let's just manually re-evaluate test_ex for Hop 1 to have all metadata.
+        
+        for ex in test_ex:
+            pt_path = hs_dir / f"{ex['id']}.pt"
+            if not pt_path.exists(): continue
+            
+            data = torch.load(pt_path)
+            pooled = data['pooled']
+            
+            for hop in ex.get('hops', []):
+                h_idx = hop['hop_idx'] - 1
+                if h_idx == 0 and hop.get('label') in (0, 1) and h_idx < pooled.shape[1]:
+                    vec = pooled[best_layer_idx, h_idx].detach().numpy()
+                    vec = np.nan_to_num(vec)
+                    
+                    # Predict probability of failure (label=1)
+                    prob_fail = clf_h1.predict_proba([vec])[0][1]
+                    
+                    qual_results.append({
+                        "prob_fail": prob_fail,
+                        "true_label": hop['label'],
+                        "question": ex['question'],
+                        "gold_entity": hop.get('wiki_links', ['Unknown'])[0] if hop.get('wiki_links') else 'Unknown',
+                        "generated_text": hop['text']
+                    })
+                    
+        # Sort by most confident failure predictions
+        qual_results.sort(key=lambda x: x["prob_fail"], reverse=True)
+        
+        for i, res in enumerate(qual_results[:10]):
+            print(f"\n--- Sample {i+1} ---")
+            print(f"Question:       {res['question']}")
+            print(f"Gold Entity:    {res['gold_entity']}")
+            print(f"Generated Hop:  {res['generated_text']}")
+            print(f"True Label:     {'1 (Hallucination)' if res['true_label'] == 1 else '0 (Success)'}")
+            print(f"Probe Predicts: {res['prob_fail']*100:.1f}% chance of Failure")
+            
+    print("\n" + "=" * 140)
+
 if __name__ == "__main__":
     if len(sys.argv) < 3:
         print("Usage: python advanced_probing.py <labels_jsonl> <hs_dir>")
