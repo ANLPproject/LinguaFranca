@@ -325,7 +325,7 @@ def extract_hidden_states(
                     continue
                 key = f"hop{hop_idx + 1}"
                 if key not in single:
-                    single[key] = torch.zeros(len(layer_indices), hid_dim, dtype=model.dtype)
+                    single[key] = torch.zeros(len(layer_indices), hid_dim, dtype=nn_model.model.dtype)
                 # Last token of the hop span
                 single[key][li_idx] = hs[t_end - 1].cpu()
         save_dict["single_token"] = single
