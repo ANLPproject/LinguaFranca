@@ -27,6 +27,39 @@ The Layer 10 probe correctly identified different modalities of hallucination wi
 A key methodological concern was whether the probe was simply acting as a mechanical "refusal detector" rather than truly understanding reasoning failures. We split the failure class into "Hedging" (explicitly stating lack of knowledge) and "Confidently Wrong" (stating a lie). The layer-wise breakdown proved the probe is doing much more than lexical matching:
 * **Layer 10:** 100.0% accurate at detecting Hedging | 80.0% accurate at detecting Confident Lies.
 * **Layer 11 (The True Sweet Spot):** 100.0% accurate at detecting Hedging | **98.2% accurate at detecting Confident Lies**.
+
+**Full Layer-by-Layer Breakdown (Hop-1 Test Set Failures):**
+| Layer | Hedging Acc (%) | Confident Wrong Acc (%) |
+|-------|-----------------|-------------------------|
+| 0     | 100.0           | 65.5                    |
+| 1     | 100.0           | 83.6                    |
+| 2     | 100.0           | 83.6                    |
+| 3     | 92.3            | 70.9                    |
+| 4     | 100.0           | 78.2                    |
+| 5     | 100.0           | 70.9                    |
+| 6     | 100.0           | 80.0                    |
+| 7     | 100.0           | 60.0                    |
+| 8     | 100.0           | 90.9                    |
+| 9     | 84.6            | 60.0                    |
+| 10    | 100.0           | 80.0                    |
+| **11**| **100.0**       | **98.2**                |
+| 12    | 92.3            | 80.0                    |
+| 13    | 100.0           | 78.2                    |
+| 14    | 100.0           | 87.3                    |
+| 15    | 92.3            | 78.2                    |
+| 16    | 92.3            | 74.5                    |
+| 17    | 100.0           | 87.3                    |
+| 18    | 100.0           | 67.3                    |
+| 19    | 100.0           | 74.5                    |
+| 20    | 100.0           | 80.0                    |
+| 21    | 100.0           | 81.8                    |
+| 22    | 100.0           | 78.2                    |
+| 23    | 100.0           | 67.3                    |
+| 24    | 100.0           | 69.1                    |
+| 25    | 100.0           | 70.9                    |
+| 26    | 100.0           | 65.5                    |
+| 27    | 100.0           | 70.9                    |
+
 This definitively proves that the probe is capturing the fundamental failure of reasoning (unsupported facts) deep in the model's representations, regardless of whether the model chooses to express that failure honestly (hedging) or dishonestly (hallucinating).
 
 ## 5. Causal Patching & Denoising (Phase 4)
