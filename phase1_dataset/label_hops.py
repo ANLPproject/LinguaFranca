@@ -266,14 +266,20 @@ def label_example(
     # ── Phase A: label hops the model DID generate, in generation order ──────
     for hop_idx in sorted(parsed_hops.keys()):
         hop_text    = parsed_hops[hop_idx]
-        gold_entity = bipartite.get(hop_idx, "")  # empty = no bipartite match
+        
+        # Look up the actual gold entity for this hop index from the graph
+        real_gold_entity = ""
+        for node in graph:
+            if node["hop"] == hop_idx:
+                real_gold_entity = node.get("gold_entity", "")
+                break
 
-        if not gold_entity:
+        if hop_idx not in bipartite:
             # No gold entity claimed for this hop → genuine failure
             labeled_hops.append({
                 "hop_idx":              hop_idx,
                 "text":                 hop_text,
-                "bridging_entity_gold": "",
+                "bridging_entity_gold": real_gold_entity,  # Preserved!
                 "bridging_entity_pred": _best_np(hop_text),
                 "match_method":         "unmatched_gold",
                 "label":                1,
@@ -282,12 +288,13 @@ def label_example(
                 first_fail = hop_idx
             continue
 
-        result = matcher.match(gold_entity, hop_text)
+        matched_gold = bipartite[hop_idx]
+        result = matcher.match(matched_gold, hop_text)
         label  = 0 if result.matched else 1
         labeled_hops.append({
             "hop_idx":              hop_idx,
             "text":                 hop_text,
-            "bridging_entity_gold": gold_entity,
+            "bridging_entity_gold": real_gold_entity,
             "bridging_entity_pred": _best_np(hop_text),
             "match_method":         result.method,
             "sbert_score":          getattr(result, "score", None),
