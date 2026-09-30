@@ -65,11 +65,20 @@ def run_evaluation(labels_file, hs_dir):
                         vec = pooled[layer_idx, h_idx].detach().numpy()
                         vec = np.nan_to_num(vec)
                         prob_fail = clf_h1.predict_proba([vec])[0][1]
+                        gold_ent = hop.get("bridging_entity_gold", "")
+                        if not gold_ent:
+                            for g in ex.get("reasoning_graph", []):
+                                if g.get("hop") == hop['hop_idx']:
+                                    gold_ent = g.get("gold_entity", "")
+                                    break
+                        if not gold_ent:
+                            gold_ent = "Unknown"
+                            
                         qual_results_layer10.append({
                             "prob_fail": prob_fail,
                             "true_label": hop['label'],
                             "question": ex['question'],
-                            "gold_entity": hop.get("bridging_entity_gold", hop.get('wiki_links', ['Unknown'])[0] if hop.get('wiki_links') else 'Unknown'),
+                            "gold_entity": gold_ent,
                             "generated_text": hop['text'],
                             "is_cf": ex.get('is_counterfactual', False)
                         })

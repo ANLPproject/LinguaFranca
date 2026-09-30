@@ -27,6 +27,15 @@ def run_llm_baseline(labels_file, hs_dir):
     for ex in test_ex:
         for hop in ex.get('hops', []):
             if hop.get('label') in (0, 1):
+                gold_ent = hop.get("bridging_entity_gold", "")
+                if not gold_ent:
+                    # Fallback to the reasoning graph for unmatched hops
+                    hop_idx = hop.get("hop_idx", -1)
+                    for g in ex.get("reasoning_graph", []):
+                        if g.get("hop") == hop_idx:
+                            gold_ent = g.get("gold_entity", "")
+                            break
+                            
                 ctx = ex.get("context", "")
                 if isinstance(ctx, list):
                     ctx_str = "".join([c[1] if isinstance(c, (list, tuple)) and len(c) > 1 else str(c) for c in ctx])
@@ -35,7 +44,7 @@ def run_llm_baseline(labels_file, hs_dir):
                     
                 test_data.append({
                     "context": ctx_str,
-                    "gold_entity": hop.get("bridging_entity_gold", ""),
+                    "gold_entity": gold_ent,
                     "hop_text": hop["text"],
                     "label": hop["label"]
                 })
