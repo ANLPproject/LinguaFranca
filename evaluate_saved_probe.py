@@ -69,7 +69,7 @@ def run_evaluation(labels_file, hs_dir):
                             "prob_fail": prob_fail,
                             "true_label": hop['label'],
                             "question": ex['question'],
-                            "gold_entity": hop.get('wiki_links', ['Unknown'])[0] if hop.get('wiki_links') else 'Unknown',
+                            "gold_entity": hop.get("bridging_entity_gold", hop.get('wiki_links', ['Unknown'])[0] if hop.get('wiki_links') else 'Unknown'),
                             "generated_text": hop['text']
                         })
                     
