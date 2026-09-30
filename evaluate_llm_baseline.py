@@ -27,8 +27,14 @@ def run_llm_baseline(labels_file, hs_dir):
     for ex in test_ex:
         for hop in ex.get('hops', []):
             if hop.get('label') in (0, 1):
+                ctx = ex.get("context", "")
+                if isinstance(ctx, list):
+                    ctx_str = "".join([c[1] if isinstance(c, (list, tuple)) and len(c) > 1 else str(c) for c in ctx])
+                else:
+                    ctx_str = str(ctx)
+                    
                 test_data.append({
-                    "context": "".join([c[1] for c in ex.get("context", [])]),
+                    "context": ctx_str,
                     "gold_entity": hop.get("bridging_entity_gold", ""),
                     "hop_text": hop["text"],
                     "label": hop["label"]
