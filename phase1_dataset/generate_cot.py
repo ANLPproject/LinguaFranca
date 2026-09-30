@@ -406,9 +406,9 @@ def run_generation(cfg: dict, dry_run: bool = False) -> Path:
         evidences = rec.get("evidences", [])
         graph = []
         for i, ev in enumerate(evidences):
-            if isinstance(ev, (list, tuple)) and len(ev) >= 3:
+            if hasattr(ev, '__len__') and not isinstance(ev, (str, dict)) and len(ev) >= 3:
                 gold_ent = ev[2]
-            elif isinstance(ev, dict):
+            elif hasattr(ev, 'get'):
                 gold_ent = ev.get("val") or ev.get("object") or ev.get("value") or ""
             else:
                 gold_ent = ""
@@ -416,9 +416,9 @@ def run_generation(cfg: dict, dry_run: bool = False) -> Path:
 
         # supporting_facts: [[title, sent_id], ...] or [{"title": ..., "sent_id": ...}, ...]
         def _sf_title(sf):
-            if isinstance(sf, (list, tuple)):
-                return sf[0] if sf else ""
-            elif isinstance(sf, dict):
+            if hasattr(sf, '__len__') and not isinstance(sf, (str, dict)):
+                return sf[0] if len(sf) > 0 else ""
+            elif hasattr(sf, 'get'):
                 return sf.get("title") or sf.get("key") or ""
             return ""
 
