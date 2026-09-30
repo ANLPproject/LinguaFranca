@@ -70,7 +70,8 @@ def run_evaluation(labels_file, hs_dir):
                             "true_label": hop['label'],
                             "question": ex['question'],
                             "gold_entity": hop.get("bridging_entity_gold", hop.get('wiki_links', ['Unknown'])[0] if hop.get('wiki_links') else 'Unknown'),
-                            "generated_text": hop['text']
+                            "generated_text": hop['text'],
+                            "is_cf": ex.get('is_counterfactual', False)
                         })
                     
         X_test_hs = np.array(X_test_hs)
@@ -92,11 +93,26 @@ def run_evaluation(labels_file, hs_dir):
     
     # QUALITATIVE ERROR ANALYSIS (Layer 10)
     print("\n" + "="*80)
-    print("QUALITATIVE PROBE ANALYSIS (Layer 10 - Top 10 Most Confident Failures)")
+    print("QUALITATIVE PROBE ANALYSIS (Layer 10)")
     print("="*80)
+    
     qual_results_layer10.sort(key=lambda x: x["prob_fail"], reverse=True)
-    for i, res in enumerate(qual_results_layer10[:10]):
-        print(f"\n--- Sample {i+1} ---")
+    
+    cf_failures = [r for r in qual_results_layer10 if r["is_cf"]][:5]
+    natural_failures = [r for r in qual_results_layer10 if not r["is_cf"]][:5]
+    
+    print("\n--- TOP 5 COUNTERFACTUAL FAILURES ---")
+    for i, res in enumerate(cf_failures):
+        print(f"\nSample {i+1}")
+        print(f"Question:       {res['question']}")
+        print(f"Gold Entity:    {res['gold_entity']}")
+        print(f"Generated Hop:  {res['generated_text']}")
+        print(f"True Label:     {'1 (Hallucination)' if res['true_label'] == 1 else '0 (Success)'}")
+        print(f"Probe Predicts: {res['prob_fail']*100:.1f}% chance of Failure")
+
+    print("\n\n--- TOP 5 NATURAL FAILURES (No Swapped Entities) ---")
+    for i, res in enumerate(natural_failures):
+        print(f"\nSample {i+1}")
         print(f"Question:       {res['question']}")
         print(f"Gold Entity:    {res['gold_entity']}")
         print(f"Generated Hop:  {res['generated_text']}")
