@@ -192,6 +192,27 @@ def run_advanced_probing_all_layers(labels_file, hs_dir):
         print(f"Train N={len(y_train_h1)}, Test N={len(y_test_h1)}")
         print(f"Majority Class Rate: {max(np.mean(y_test_h1 == 0), np.mean(y_test_h1 == 1)):.3f}")
         print(f"Acc: {accuracy_score(y_test_h1, y_pred_h1):.3f} | AUROC: {roc_auc_score(y_test_h1, y_prob_h1):.3f}")
+        # HEDGING VS CONFIDENTLY WRONG ANALYSIS
+        hedging_keywords = ["no information", "no mention", "not mentioned", "no relevant information", "not found", "cannot find", "does not mention"]
+        X_test_text_h1 = np.array(X_test_text)[test_h1_mask]
+        
+        fail_mask = y_test_h1 == 1
+        X_fail_text = X_test_text_h1[fail_mask]
+        X_fail_hs = X_test_h1[fail_mask]
+        y_fail = y_test_h1[fail_mask]  # all 1s
+        
+        y_fail_pred = clf_h1.predict(X_fail_hs)
+        
+        is_hedging = np.array([any(k in t.lower() for k in hedging_keywords) for t in X_fail_text])
+        
+        hedge_acc = np.mean(y_fail_pred[is_hedging] == y_fail[is_hedging]) if np.sum(is_hedging) > 0 else 0
+        wrong_acc = np.mean(y_fail_pred[~is_hedging] == y_fail[~is_hedging]) if np.sum(~is_hedging) > 0 else 0
+        
+        print(f"\n[Control] HEDGING VS CONFIDENTLY WRONG FAILURES (Layer {best_layer_idx}, Hop 1 Test Set)")
+        print(f"Total Failures in Test Set: {len(y_fail)}")
+        print(f"Hedging Failures: {np.sum(is_hedging)} | Probe Accuracy on Hedging: {hedge_acc:.3f}")
+        print(f"Confident Wrong Failures: {np.sum(~is_hedging)} | Probe Accuracy on Confident Wrong: {wrong_acc:.3f}")
+
     else:
         print("\n[Control] Not enough Hop-1 examples to run Hop-1 Only check.")
 
