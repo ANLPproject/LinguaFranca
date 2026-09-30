@@ -80,5 +80,5 @@ This definitively proves that the probe is capturing the fundamental failure of 
 
 ### 9. Sycophancy in LLM-as-a-Judge
 * When broken down by failure type, the LLM Judge completely collapses due to sycophancy (yes-bias).
-* **Hedging Failure Accuracy (23.0%):** When the model explicitly states 'I don't know' or 'There is no information', the external LLM judge still incorrectly marks it as a successful reasoning step 77% of the time.
-* **Confident Failure Accuracy (28.7%):** When the model hallucinated confidently, the LLM Judge caught it only 28.7% of the time, compared to the Linear Probe which caught it **98.2%** of the time.
+* **Hedging Failure Accuracy (23.0%):** When the model explicitly states 'I don't know', the external LLM judge still incorrectly marks it as a successful reasoning step 77% of the time. (Note: This may also be due to prompt design—the LLM might just be checking if the entity exists in the long context block, rather than checking if the specific hop succeeded).
+* **Confident Failure Accuracy (28.7% vs 74.2%):** When evaluated *only* on the hard subset of confident hallucinations, the LLM Judge caught it only 28.7% of the time. In a strict apples-to-apples comparison on this exact same subset, the internal Linear Probe (Layer 11) caught it **74.2%** of the time. The probe is still vastly superior (~2.6x better).
