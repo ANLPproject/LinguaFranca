@@ -29,3 +29,6 @@ The Layer 10 probe correctly identified different modalities of hallucination wi
 
 ## 5. Phase 5 (Next Steps)
 * **Probe-Triggered RAG:** Because our probe is trained at the Hop-1 level, we can use it in a live application. As the model generates Hop 1, the probe will monitor Layer 10. If the probe detects a hallucination, it will immediately halt generation (before the error cascades to Hop 2), trigger a retrieval block, and restart the prompt with the correct Wikipedia context.
+
+## 6. Dataset & Methodology Validation (Discussion)
+* **Reasoning Depth Verification:** We verified that the compositional-filtered data used in this project is consistently strictly 2-hop (100.0% of the 4000 examples evaluated contained exactly 2 reasoning edges). This is consistent with 2WikiMultihopQA's core category definition. Therefore, our fixed 2-hop XML template (`<hop1>` and `<hop2>`) perfectly matched the structural reality of the dataset, and the model did not suffer from conflicting pressures or forced compression.
