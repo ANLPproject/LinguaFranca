@@ -71,3 +71,14 @@ This definitively proves that the probe is capturing the fundamental failure of 
 
 ## 7. Dataset & Methodology Validation (Discussion)
 * **Reasoning Depth Verification:** We verified that the compositional-filtered data used in this project is consistently strictly 2-hop (100.0% of the 4000 examples evaluated contained exactly 2 reasoning edges). This is consistent with 2WikiMultihopQA's core category definition. Therefore, our fixed 2-hop XML template (`<hop1>` and `<hop2>`) perfectly matched the structural reality of the dataset, and the model did not suffer from conflicting pressures or forced compression.
+
+### 8. The LLM-as-a-Judge Baseline Comparison (Massive Selling Point)
+* **The Experiment:** We tested if Llama-3.2-3B could act as an external judge to catch its own reasoning hallucinations by prompting it with the full Wikipedia context and the reasoning hop.
+* **The Baseline Failure:** The external LLM judge failed completely, achieving only **63.1% accuracy** (barely better than random chance) despite consuming 1039 tokens per hop and taking 648ms of inference time.
+* **The Probe Superiority:** In contrast, the internal Linear Probe on Layer 11 achieved **91.4% accuracy** with ** token cost** and less than 1ms of latency (O(1) matrix multiplication).
+* **The Conclusion:** Small 3B models lack the capacity to act as reliable external text-based judges for fact-checking. However, they internally *know* when they are hallucinating! Probing hidden states unlocks this knowledge efficiently and accurately.
+
+### 9. Sycophancy in LLM-as-a-Judge
+* When broken down by failure type, the LLM Judge completely collapses due to sycophancy (yes-bias).
+* **Hedging Failure Accuracy (23.0%):** When the model explicitly states 'I don't know' or 'There is no information', the external LLM judge still incorrectly marks it as a successful reasoning step 77% of the time.
+* **Confident Failure Accuracy (28.7%):** When the model hallucinated confidently, the LLM Judge caught it only 28.7% of the time, compared to the Linear Probe which caught it **98.2%** of the time.
