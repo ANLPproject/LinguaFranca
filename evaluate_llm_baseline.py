@@ -82,6 +82,9 @@ def run_llm_baseline(labels_file, hs_dir):
         )
 
         print(f"Running evaluation...")
+        y_fail_hedge_true, y_fail_hedge_pred = [], []
+        y_fail_conf_true, y_fail_conf_pred = [], []
+        
         for item in test_data:
             context_text = item["context"]
             gold_entity = item["gold_entity"]
@@ -117,13 +120,29 @@ def run_llm_baseline(labels_file, hs_dir):
             latencies.append((t1 - t0) * 1000)  # ms
             token_costs.append(input_len + 3) # approx total tokens per hop decision
             
+            # Track hedging vs confident
+            is_hedge = any(k in hop_text.lower() for k in ["no information", "no mention", "not mentioned", "no relevant information", "not found", "cannot find", "does not mention"])
+            if true_label == 1:
+                if is_hedge:
+                    y_fail_hedge_true.append(1)
+                    y_fail_hedge_pred.append(pred_label)
+                else:
+                    y_fail_conf_true.append(1)
+                    y_fail_conf_pred.append(pred_label)
+            
         acc = accuracy_score(y_true, y_pred)
         f1 = f1_score(y_true, y_pred)
         avg_lat = np.mean(latencies)
         avg_toks = np.mean(token_costs)
         
         print(f"\nRESULTS FOR {model_name}:")
-        print(f"Accuracy: {acc:.3f} | F1: {f1:.3f}")
+        print(f"Overall Accuracy: {acc:.3f} | F1: {f1:.3f}")
+        
+        hedge_acc = accuracy_score(y_fail_hedge_true, y_fail_hedge_pred) if y_fail_hedge_true else 0.0
+        conf_acc = accuracy_score(y_fail_conf_true, y_fail_conf_pred) if y_fail_conf_true else 0.0
+        print(f"Hedging Failure Acc: {hedge_acc:.3f}")
+        print(f"Confident Failure Acc: {conf_acc:.3f}")
+        
         print(f"Average Latency per hop: {avg_lat:.1f} ms")
         print(f"Average Token Cost per hop: {avg_toks:.1f} tokens")
         
