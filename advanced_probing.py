@@ -1,6 +1,7 @@
 import json
 import torch
 import numpy as np
+import joblib
 from pathlib import Path
 from collections import Counter
 from sklearn.linear_model import LogisticRegression
@@ -245,6 +246,12 @@ def run_advanced_probing_all_layers(labels_file, hs_dir):
 
 
     # =====================================================================
+    
+    # Save the trained Hop-1 probe for Phase 5 (RAG System)
+    probe_save_path = hs_dir.parent / "hop1_probe_layer10.joblib"
+    joblib.dump(clf_h1, probe_save_path)
+    print(f"\n[+] Saved trained Hop-1 Probe to {probe_save_path}")
+
     # QUALITATIVE ERROR ANALYSIS
     # =====================================================================
     print("\n" + "=" * 140)
