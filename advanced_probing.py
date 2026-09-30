@@ -247,10 +247,20 @@ def run_advanced_probing_all_layers(labels_file, hs_dir):
 
     # =====================================================================
     
-    # Save the trained Hop-1 probe for Phase 5 (RAG System)
-    probe_save_path = hs_dir.parent / "hop1_probe_layer10.joblib"
-    joblib.dump(clf_h1, probe_save_path)
-    print(f"\n[+] Saved trained Hop-1 Probe to {probe_save_path}")
+    # Save the trained Hop-1 probe for ALL layers for Phase 5 (RAG System)
+    print("\n[+] Saving trained Hop-1 probes for all layers to disk...")
+    for li in layer_indices:
+        X_tr, _, y_tr, _, hop_idx_tr, _ = extract_data(train_ex, hs_dir, layer_idx=li)
+        h1_mask_tr = hop_idx_tr == 1
+        X_tr_h1 = X_tr[h1_mask_tr]
+        y_tr_h1 = y_tr[h1_mask_tr]
+        
+        if len(y_tr_h1) > 0:
+            clf_li = make_pipeline(StandardScaler(), LogisticRegression(max_iter=1000, class_weight='balanced', random_state=42))
+            clf_li.fit(X_tr_h1, y_tr_h1)
+            probe_save_path = hs_dir.parent / f"hop1_probe_layer{li}.joblib"
+            joblib.dump(clf_li, probe_save_path)
+    print(f"[+] Saved {len(layer_indices)} layer probes to {hs_dir.parent}")
 
     # QUALITATIVE ERROR ANALYSIS
     # =====================================================================
