@@ -28,6 +28,7 @@ def run_llm_baseline(labels_file, hs_dir):
         for hop in ex.get('hops', []):
             if hop.get('label') in (0, 1):
                 test_data.append({
+                    "context": "".join([c[1] for c in ex.get("context", [])]),
                     "gold_entity": hop.get("bridging_entity_gold", ""),
                     "hop_text": hop["text"],
                     "label": hop["label"]
@@ -59,20 +60,22 @@ def run_llm_baseline(labels_file, hs_dir):
         
         SYSTEM = "You are a precise binary judge. Answer with exactly 'yes' or 'no' — no other text."
         USER_TMPL = (
-            "Does the following reasoning step correctly identify the entity '{entity}'?\n"
+            "Context Information:\n{context}\n\n"
+            "Task: Based on the context above, does the following reasoning step correctly identify the entity '{entity}'?\n"
             "Reasoning step: \"{hop}\"\n"
             "Answer:"
         )
 
         print(f"Running evaluation...")
         for item in test_data:
+            context_text = item["context"]
             gold_entity = item["gold_entity"]
             hop_text = item["hop_text"]
             true_label = item["label"]
             
             messages = [
                 {"role": "system", "content": SYSTEM},
-                {"role": "user",   "content": USER_TMPL.format(entity=gold_entity, hop=hop_text)},
+                {"role": "user",   "content": USER_TMPL.format(context=context_text, entity=gold_entity, hop=hop_text)},
             ]
             prompt = tokenizer.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True
