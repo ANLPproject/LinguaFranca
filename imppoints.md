@@ -74,11 +74,16 @@ This definitively proves that the probe is capturing the fundamental failure of 
 
 ### 8. The LLM-as-a-Judge Baseline Comparison (Massive Selling Point)
 * **The Experiment:** We tested if Llama-3.2-3B could act as an external judge to catch its own reasoning hallucinations by prompting it with the full Wikipedia context and the reasoning hop.
-* **The Baseline Failure:** The external LLM judge failed completely, achieving only **63.1% accuracy** (barely better than random chance) despite consuming 1039 tokens per hop and taking 648ms of inference time.
-* **The Probe Superiority:** In contrast, the internal Linear Probe on Layer 11 achieved **91.4% accuracy** with ** token cost** and less than 1ms of latency (O(1) matrix multiplication).
+* **The Baseline Failure:** The external LLM judge failed completely, achieving only **61.7% accuracy** (barely better than random chance) despite consuming 1080 tokens per hop and taking 697ms of inference time.
+* **The Probe Superiority:** In contrast, the internal Linear Probe on Layer 11 achieved **91.4% accuracy** with **0 token cost** and less than 1ms of latency (O(1) matrix multiplication).
 * **The Conclusion:** Small 3B models lack the capacity to act as reliable external text-based judges for fact-checking. However, they internally *know* when they are hallucinating! Probing hidden states unlocks this knowledge efficiently and accurately.
 
-### 9. Sycophancy in LLM-as-a-Judge
-* When broken down by failure type, the LLM Judge completely collapses due to sycophancy (yes-bias).
-* **Hedging Failure Accuracy (23.0%):** When the model explicitly states 'I don't know', the external LLM judge still incorrectly marks it as a successful reasoning step 77% of the time. (Note: This may also be due to prompt design—the LLM might just be checking if the entity exists in the long context block, rather than checking if the specific hop succeeded).
-* **Confident Failure Accuracy (28.7% vs 74.2%):** When evaluated *only* on the hard subset of confident hallucinations, the LLM Judge caught it only 28.7% of the time. In a strict apples-to-apples comparison on this exact same subset, the internal Linear Probe (Layer 11) caught it **74.2%** of the time. The probe is still vastly superior (~2.6x better).
+### 9. Blindness in Post-Hoc LLM Judging
+When broken down by failure type, the un-finetuned LLM Judge completely collapses:
+* **Hedging Failure Accuracy (5.9%):** When the model hedges and claims the answer isn't in the context (even though it is), the LLM judge agrees with the lie 94.1% of the time!
+* **Confident Failure Accuracy (18.4% vs 98.2%):** When evaluated on confident hallucinations, the LLM Judge caught them only 18.4% of the time. In contrast, the internal Linear Probe (Layer 11) caught them **98.2%** of the time.
+
+### 10. Doctor-RAG Comparison: The Power of Probing
+* The **Doctor-RAG** paper proposes a post-hoc "Diagnose-and-Repair" framework using an LLM to evaluate failed reasoning trajectories. To achieve an 81.3% diagnosis accuracy, they had to rely on a computationally expensive *distilled and fine-tuned* diagnosis LLM.
+* As our 61.7% LLM Baseline shows, off-the-shelf models are terrible at post-hoc text-based diagnosis.
+* **The Narrative Pivot:** Our project demonstrates that instead of waiting for a trajectory to fail and spending heavy compute to fine-tune an LLM just to diagnose the text, we can use a **Linear Probe** to read the model's subconscious hidden states during generation. Our probe achieves **91%+ accuracy** instantly, allowing for an "Early Warning System" that triggers a fix *before* the trajectory fails, rendering heavy post-hoc LLM analysis unnecessary.
