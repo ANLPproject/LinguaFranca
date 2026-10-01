@@ -45,6 +45,11 @@ def run_llm_baseline(labels_file, hs_dir):
                 
     print(f"Total test hops to evaluate: {len(test_data)}")
     
+    label_counts = {0: 0, 1: 0}
+    for item in test_data:
+        label_counts[item["label"]] += 1
+    print(f"Test Set Class Balance: Label 0 (Success): {label_counts[0]}, Label 1 (Failure): {label_counts[1]}")
+    
     models = [
         "meta-llama/Llama-3.2-3B-Instruct", 
         "Qwen/Qwen2.5-3B-Instruct"
@@ -81,6 +86,7 @@ def run_llm_baseline(labels_file, hs_dir):
         print(f"Running evaluation...")
         y_fail_hedge_true, y_fail_hedge_pred = [], []
         y_fail_conf_true, y_fail_conf_pred = [], []
+        confident_miss_prompts = []
         
         printed_count = 0
         for item in test_data:
@@ -132,6 +138,8 @@ def run_llm_baseline(labels_file, hs_dir):
                 else:
                     y_fail_conf_true.append(1)
                     y_fail_conf_pred.append(pred_label)
+                    if pred_label == 0:
+                        confident_miss_prompts.append((prompt, hop_text))
             
         acc = accuracy_score(y_true, y_pred)
         f1 = f1_score(y_true, y_pred)
@@ -148,6 +156,12 @@ def run_llm_baseline(labels_file, hs_dir):
         
         print(f"Average Latency per hop: {avg_lat:.1f} ms")
         print(f"Average Token Cost per hop: {avg_toks:.1f} tokens")
+        
+        print(f"\n--- SPOT CHECK: Confident Failure Misses (True=1, Pred=0) ---")
+        for i, (miss_prompt, miss_hop) in enumerate(confident_miss_prompts[:3]):
+            print(f"\n[Miss {i+1}] Hop Text: '{miss_hop}'")
+            print(f"Prompt sent to judge:\n{miss_prompt}")
+            print("--------------------------------------------------")
         
         # Free up memory before loading the next model
         del model, tokenizer
