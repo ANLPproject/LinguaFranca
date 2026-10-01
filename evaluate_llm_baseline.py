@@ -27,15 +27,9 @@ def run_llm_baseline(labels_file, hs_dir):
     for ex in test_ex:
         for hop in ex.get('hops', []):
             if hop.get('label') in (0, 1):
-                gold_ent = hop.get("bridging_entity_gold", "")
-                if not gold_ent:
-                    # Fallback to the reasoning graph for unmatched hops
-                    hop_idx = hop.get("hop_idx", -1)
-                    for g in ex.get("reasoning_graph", []):
-                        if g.get("hop") == hop_idx:
-                            gold_ent = g.get("gold_entity", "")
-                            break
-                            
+                if not hop.get("text", "").strip():
+                    continue  # Phase B "missing" hops have no text — nothing to judge
+                    
                 ctx = ex.get("context", "")
                 if isinstance(ctx, list):
                     ctx_str = "".join([c[1] if isinstance(c, (list, tuple)) and len(c) > 1 else str(c) for c in ctx])
@@ -44,7 +38,7 @@ def run_llm_baseline(labels_file, hs_dir):
                     
                 test_data.append({
                     "context": ctx_str,
-                    "gold_entity": gold_ent,
+                    "question": ex["question"],
                     "hop_text": hop["text"],
                     "label": hop["label"]
                 })
@@ -76,7 +70,10 @@ def run_llm_baseline(labels_file, hs_dir):
         SYSTEM = "You are a precise binary judge. Answer with exactly 'yes' or 'no' — no other text."
         USER_TMPL = (
             "Context Information:\n{context}\n\n"
-            "Task: Based on the context above, does the following reasoning step correctly identify the entity '{entity}'?\n"
+            "Question: {question}\n\n"
+            "Task: Based ONLY on the context above, is the following reasoning step factually "
+            "correct and properly grounded in the context? Answer 'no' if the step states "
+            "something not supported by the context, even if it sounds plausible.\n"
             "Reasoning step: \"{hop}\"\n"
             "Answer:"
         )
@@ -85,15 +82,16 @@ def run_llm_baseline(labels_file, hs_dir):
         y_fail_hedge_true, y_fail_hedge_pred = [], []
         y_fail_conf_true, y_fail_conf_pred = [], []
         
+        printed_count = 0
         for item in test_data:
             context_text = item["context"]
-            gold_entity = item["gold_entity"]
+            question_text = item["question"]
             hop_text = item["hop_text"]
             true_label = item["label"]
             
             messages = [
                 {"role": "system", "content": SYSTEM},
-                {"role": "user",   "content": USER_TMPL.format(context=context_text, entity=gold_entity, hop=hop_text)},
+                {"role": "user",   "content": USER_TMPL.format(context=context_text, question=question_text, hop=hop_text)},
             ]
             prompt = tokenizer.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True
@@ -113,6 +111,11 @@ def run_llm_baseline(labels_file, hs_dir):
             t1 = time.time()
             
             reply = tokenizer.decode(out[0][input_len:], skip_special_tokens=True).strip().lower()
+            
+            if printed_count < 20:
+                print(f"Raw Reply [{printed_count+1}/20]: '{reply}' | True Label: {true_label}")
+                printed_count += 1
+                
             pred_label = 0 if reply.startswith("yes") else 1
             
             y_true.append(true_label)
