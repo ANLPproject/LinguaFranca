@@ -52,7 +52,9 @@ def run_llm_baseline(labels_file, hs_dir):
     
     models = [
         "meta-llama/Llama-3.2-3B-Instruct", 
-        "Qwen/Qwen2.5-3B-Instruct"
+        "Qwen/Qwen2.5-3B-Instruct",
+        "Qwen/Qwen2.5-7B-Instruct",
+        "meta-llama/Llama-3.1-8B-Instruct"
     ]
     
     for model_name in models:
