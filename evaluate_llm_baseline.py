@@ -42,6 +42,15 @@ def run_llm_baseline(labels_file, hs_dir):
                 })
                 continue
 
+            gold_ent = hop.get("bridging_entity_gold", "")
+            if not gold_ent:
+                # Fallback to the reasoning graph for unmatched hops
+                hop_idx = hop.get("hop_idx", -1)
+                for g in ex.get("reasoning_graph", []):
+                    if g.get("hop") == hop_idx:
+                        gold_ent = g.get("gold_entity", "")
+                        break
+
             ctx = ex.get("context", "")
             if isinstance(ctx, list):
                 ctx_str = "\n".join(
@@ -52,7 +61,7 @@ def run_llm_baseline(labels_file, hs_dir):
                 ctx_str = str(ctx)
 
             test_data.append({
-                "context": ctx_str, "question": ex["question"],
+                "context": ctx_str, "question": ex["question"], "gold_entity": gold_ent,
                 "hop_text": hop_text, "label": hop["label"], "auto_fail": False,
             })
 
@@ -76,11 +85,10 @@ def run_llm_baseline(labels_file, hs_dir):
     USER_TMPL = (
         "Context Information:\n{context}\n\n"
         "Question: {question}\n\n"
-        "Task: Based ONLY on the context above, is the following reasoning step "
-        "factually correct and properly grounded in the context? Answer 'No' if the "
-        "step states something not supported by the context, even if it sounds "
-        "plausible, or if it incorrectly claims the context lacks information it "
-        "actually contains.\n"
+        "Task: Does this reasoning step explicitly and correctly identify the entity '{entity}'? "
+        "Answer 'No' if the step fails to name the entity, says the information is missing, "
+        "says it cannot be determined, or identifies a different entity — even if the step's "
+        "wording is not factually false.\n"
         "Reasoning step: \"{hop}\"\n"
         "Answer with exactly one word, Yes or No."
     )
@@ -125,7 +133,7 @@ def run_llm_baseline(labels_file, hs_dir):
                 messages = [
                     {"role": "system", "content": SYSTEM},
                     {"role": "user", "content": USER_TMPL.format(
-                        context=item["context"], question=item["question"], hop=item["hop_text"]
+                        context=item["context"], question=item["question"], entity=item["gold_entity"], hop=item["hop_text"]
                     )},
                 ]
                 prompt = tokenizer.apply_chat_template(
