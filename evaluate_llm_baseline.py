@@ -71,11 +71,7 @@ def run_llm_baseline(labels_file, hs_dir):
     models = [
         "meta-llama/Llama-3.2-3B-Instruct",
         "Qwen/Qwen2.5-3B-Instruct",
-<<<<<<< HEAD
         "Qwen/Qwen2.5-7B-Instruct",
-        
-=======
->>>>>>> 7aa5ba846d77adebf41fc69723f9561d226c86d5
     ]
 
     SYSTEM = (
