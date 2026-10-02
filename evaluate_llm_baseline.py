@@ -69,9 +69,7 @@ def run_llm_baseline(labels_file, hs_dir):
           f"({n_skipped_empty} are empty 'missing' hops, auto-scored as failure)")
 
     models = [
-        "meta-llama/Llama-3.2-3B-Instruct",
-        "Qwen/Qwen2.5-3B-Instruct",
-        "Qwen/Qwen2.5-7B-Instruct",
+        "meta-llama/Meta-Llama-3.1-8B-Instruct",
     ]
 
     SYSTEM = (
@@ -118,7 +116,8 @@ def run_llm_baseline(labels_file, hs_dir):
         y_fail_conf_true, y_fail_conf_pred = [], []
         raw_samples = []
 
-        for i, item in enumerate(test_data):
+        from tqdm import tqdm
+        for i, item in enumerate(tqdm(test_data, desc=f"Evaluating {model_name}")):
             true_label = item["label"]
 
             if item["auto_fail"]:
