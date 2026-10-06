@@ -9,14 +9,17 @@
 
 This repository implements the full data and modelling pipeline for the project. We test whether a lightweight probe on an LLM's hidden states can detect and localize a failing reasoning hop **at the hop boundary** — before subsequent steps are generated — and whether that signal is **causally** responsible for the failure (via activation patching).
 
-### Five Phases
-| Phase | Description | Location |
-|---|---|---|
-| 1 | **Data construction & hop labeling** | `phase1_dataset/` |
-| 2 | **Internal-state probing** | `src/probe/` *(coming)* |
-| 3 | **Causal validation (activation patching)** | `src/causal/` *(coming)* |
-| 4 | **Naive Restart RAG intervention** | `src/rag/` *(coming)* |
-| 5 | **Evaluation vs Doctor-RAG baseline** | `src/eval/` *(coming)* |
+> **Start here:** `FIXES_AND_RERUN.md` (what was fixed in Oct 2026 and what to run) and `imppoints.md` (current results).
+
+### Phases (repo numbering)
+| Phase | Description | Code | Kaggle notebook |
+|---|---|---|---|
+| 1 | Data construction & hop labeling (CoT, hidden states, labels, counterfactuals) | `phase1_dataset/`, `utils/` | `kaggle_phase1.ipynb` (only to regenerate) |
+| 1b | Canonical dataset (pinned revision + extra-hop fix) | `scripts/make_canonical_dataset.py` | — (CPU, 1 min) |
+| 2–3 | Hidden-state probes, baselines, controls | `advanced_probing.py`, `evaluate_saved_probe.py`, `bootstrap_confident_wrong.py`, `lf_common.py` | `kaggle/01_probing.ipynb` (CPU) |
+| 3 | LLM-as-judge text baseline (same rows as the probe) | `evaluate_llm_baseline.py` | `kaggle/02_llm_judge.ipynb` (GPU) |
+| 4 | Causal validation (activation patching) | `causal_patching.py`, `lf_models.py` | `kaggle/03_causal_patching.ipynb` (GPU) |
+| 5 | Probe-triggered Naive-Restart RAG + Doctor-RAG-style baseline | *(not started)* | — |
 
 ---
 
@@ -96,27 +99,28 @@ python phase1_dataset/counterfactuals.py --config configs/data_config.yaml
 
 > **Note:** The `data/` folder is heavily populated during Phase 1. Because of its large size (3+ GB), it is not tracked in this repository locally. The generated data is hosted securely on Kaggle at the [Phase 1 Dataset Link](https://www.kaggle.com/datasets/havishbalaga/linguafranca-phase1-data).
 
+Data and hidden states live on Hugging Face (`AnishRacherla/LinguaFranca-Phase3`, pinned revision
+`ce07fd04…` in `lf_common.py`), not in git.
+
 ```
 LinguaFranca/
-├── configs/
-│   └── data_config.yaml
-├── data/                     ← [Phase 1 Kaggle Dataset](https://www.kaggle.com/datasets/havishbalaga/linguafranca-phase1-data)
-│   ├── raw/                  ← (Generated when running Phase 1)
-│   ├── processed/            ← (Generated when running Phase 1)
-│   └── hidden_states/        ← (Generated when running Phase 1)
-├── src/
-│   ├── utils/
-│   │   ├── matching.py       
-│   │   └── wikidata_aliases.py
-│   └── data/
-│       ├── download.py
-│       ├── generate_cot.py
-│       ├── label_hops.py
-│       ├── counterfactuals.py
-│       └── build_dataset.py
-├── tests/                    ← Unit tests
-├── kaggle_phase1.ipynb       ← Kaggle notebook for running Phase 1
-├── kaggle_run.py             ← Script for Kaggle execution
-├── LinguaFranca-Proposal.pdf ← Project Proposal
-└── requirements.txt
+├── configs/data_config.yaml
+├── phase1_dataset/            ← Phase 1 pipeline (download, generate_cot, label_hops, hop_rules, counterfactuals, build_dataset)
+├── utils/                     ← entity matching + Wikidata aliases
+├── scripts/
+│   ├── make_canonical_dataset.py   ← builds data/canonical/augmented_v2.jsonl
+│   └── make_kaggle_bundle.py       ← builds kaggle_upload/linguafranca_bundle.zip
+├── lf_common.py, lf_models.py ← shared split / metrics / model helpers
+├── advanced_probing.py        ← Phase 2-3 probes (v2)
+├── evaluate_saved_probe.py    ← score saved probes (v2)
+├── bootstrap_confident_wrong.py
+├── evaluate_llm_baseline.py   ← LLM judge baseline (v2)
+├── causal_patching.py         ← Phase 4 (v2)
+├── kaggle/                    ← the notebooks to run (01 CPU, 02/03 GPU)
+├── kaggle_phase1.ipynb        ← regenerate Phase 1 from scratch (not needed now)
+├── outputs/probing/           ← v2 probing results
+├── legacy/                    ← superseded notebooks (see legacy/README.md)
+├── tests/test_phase1.py       ← unit tests (python tests/test_phase1.py)
+├── FIXES_AND_RERUN.md, imppoints.md
+└── LinguaFranca-Proposal.pdf
 ```

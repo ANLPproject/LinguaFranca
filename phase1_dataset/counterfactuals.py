@@ -435,6 +435,19 @@ def run_counterfactuals(cfg: dict, model=None, tokenizer=None, hf_token=None) ->
     Generate counterfactual examples until the HOP-level failure ratio reaches
     cf_cfg["target_failure_ratio"].  Returns path to augmented.jsonl.
 
+    The ratio counts labeled hops only (label 0/1).  Before the extra-hop fix
+    (phase1_dataset/hop_rules.py) unlabeled extra hops were counted as failures,
+    which made the natural data look ~44 % failing and stopped this loop after
+    only 78 counterfactuals.
+
+    Note on what these counterfactuals are: the substituted entity does not
+    appear in the (unchanged) context, so ~90 % of induced hop-1 "failures" are
+    the model correctly saying the entity is not mentioned.  Report them as a
+    separate stratum ("unanswerable / entity-not-in-context"), not as
+    hallucinations.
+
+    `hf_token` is unused; it is kept so older notebooks that pass it still run.
+
     Speed design: candidates for `chunk_size` examples are validated together
     with batched generation, one candidate per example per round; only examples
     still unresolved go on to the next round.  The run is resumable (records
@@ -466,10 +479,13 @@ def run_counterfactuals(cfg: dict, model=None, tokenizer=None, hf_token=None) ->
     with open(labeled_path, encoding="utf-8") as f:
         examples = [json.loads(line) for line in f]
 
+    # "Clean" = no labeled hop failed.  Unlabeled hops (-1: extra hops beyond
+    # the gold graph, or blank gold) are ignored rather than disqualifying.
     clean_examples = [
         ex for ex in examples
         if ex.get("first_fail_hop") is None
-        and all(h["label"] == 0 for h in ex.get("hops", []))
+        and all(h["label"] != 1 for h in ex.get("hops", []))
+        and any(h["label"] == 0 for h in ex.get("hops", []))
     ]
 
     existing_cfs = []

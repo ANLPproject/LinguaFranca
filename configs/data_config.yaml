@@ -34,6 +34,13 @@ data:
   #             re-run.  Storage and runtime drop by ~6-7x.
   n_source_examples: 2000   # Set to 2000 for your main run
 
+  # dataset_offset (optional, default 0): skip this many compositional examples
+  # of the shuffled pool.  The released 4,000-example dataset was generated in
+  # TWO Kaggle batches: offset=0,n=2000 and offset=2000,n=2000, appended into
+  # one generated_cot.jsonl.  kaggle_phase1.ipynb sets offset=2000 (batch 2);
+  # to regenerate batch 1, set it to 0 there.
+  # dataset_offset: 0
+
   datasets:
     "2wikimultihopqa":
       hf_path: "framolfese/2WikiMultihopQA"
@@ -53,7 +60,11 @@ matching:
   wikidata_aliases_path: "data/raw/wikidata_aliases.json"
   sparql_rate_limit_sec: 0.5     # be polite to Wikidata endpoint
   use_llm_fallback: true
-  llm_fallback_budget: 1.0       # 100% budget for pilot testing to ensure no false failures
+  # Max fraction of matcher calls that may go to the LLM judge.  The judge is
+  # only consulted after string/alias/SBERT all fail; in the released run it was
+  # used for ~60 hops in total, so 1.0 is not a speed problem.  Kept at 1.0 so a
+  # re-run reproduces the released labels.
+  llm_fallback_budget: 1.0
 
 # ── CoT Generation ───────────────────────────────────────────────────────────
 generation:
@@ -111,7 +122,10 @@ hidden_states:
 
 # ── Counterfactuals ──────────────────────────────────────────────────────────
 counterfactuals:
-  target_failure_ratio: 0.45    # aim for 45 % failure examples (near 50/50)
+  # Hop-level failure ratio over LABELED hops (0/1) only.  With extra hops now
+  # unlabeled (-1), natural data is ~24 % failing on hops 1-2, so 0.45 would ask
+  # for ~1,800 counterfactuals.  The released dataset has 78 (see FIXES_AND_RERUN.md).
+  target_failure_ratio: 0.45
   max_substitution_attempts: 3  # tries per example before giving up
   chunk_size: 32                # process in batches of 32 candidates
   gen_batch_size: 4             # safe size for Kaggle T4x2

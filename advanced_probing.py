@@ -1,340 +1,334 @@
+"""
+advanced_probing.py  (v2)
+─────────────────────────
+Hop-level failure probes on pooled hidden states, with honest baselines.
+
+What changed vs v1 (see FIXES_AND_RERUN.md):
+  * Only hops 1-2 are used.  v1 also used the model's extra hops (hop 3..18),
+    which have no gold entity and were all labeled "failure" by the old
+    labeler — 1/3 of v1's rows and 64 % of its failure labels.
+  * Layer selection uses 5-fold grouped CV on the TRAIN split only; the test
+    split is touched once, for the final numbers.
+  * Every recall (TPR) is reported with its false-positive rate.
+  * Saved probes are trained on the right hop (v1 saved Hop-2 probes under the
+    name hop1_probe_*), and carry metadata so evaluate_saved_probe.py can check.
+  * Natural examples and counterfactuals (CF) are reported separately.  CFs are
+    "entity not in context" questions; ~90 % of their hop-1 failures are the
+    model saying so ("hedging").  Natural hop-1 failures contain no hedging.
+  * Fixed: NameErrors in the hedging block, unseeded/MLP shuffled-label control,
+    cross-hop test that included training examples.
+
+Usage
+─────
+  python advanced_probing.py --data data/canonical/augmented_v2.jsonl \
+                             --hs-dir data/hidden_states --out outputs/probing
+  (legacy form also works:  python advanced_probing.py <data.jsonl> <hs_dir>)
+
+Runtime: CPU only.  ~25 min for 28 layers on a 16-core laptop; ~45-60 min on a
+Kaggle CPU session.  RAM: ~100 MB per layer in a chunk (--layer-chunk).
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import hashlib
 import json
-import torch
-import numpy as np
-import joblib
+import time
 from pathlib import Path
-from collections import Counter
-from sklearn.linear_model import LogisticRegression
-from sklearn.neural_network import MLPClassifier
-from sklearn.svm import SVC
-from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
-from sklearn.preprocessing import StandardScaler
-from sklearn.pipeline import make_pipeline
+
+import joblib
+import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.model_selection import GroupShuffleSplit
-import sys
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import GroupKFold
 
-def extract_data(ex_list, hs_dir, layer_idx=None):
-    """Extracts X (hidden states), X_text (raw text), y (labels), is_counterfactual, hop_idxs, and group_ids."""
-    X_hs, X_text, y, is_cf, hop_idxs, group_ids = [], [], [], [], [], []
-    for ex in ex_list:
-        pt_path = hs_dir / f"{ex['id']}.pt"
-        if not pt_path.exists():
+from lf_common import (DEFAULT_DATA, binary_metrics, canonical_split, fmt_metrics, grouped_bootstrap_ci,
+                       hop_rows, load_examples, load_hidden, make_probe, rows_arrays)
+
+TASKS = {  # task name -> which hops it trains/tests on
+    "hop1": (1,),
+    "hop2": (2,),
+    "hop12": (1, 2),
+}
+
+
+def oof_cv(X, y, groups, n_splits=5, seed=42):
+    """Out-of-fold probabilities with GroupKFold."""
+    prob = np.full(len(y), np.nan)
+    for tr, te in GroupKFold(n_splits=n_splits).split(X, y, groups):
+        if len(set(y[tr])) < 2:
             continue
-            
-        data = torch.load(pt_path)
-        pooled = data['pooled']
-        
-        for hop in ex.get('hops', []):
-            h_idx = hop['hop_idx'] - 1
-            if hop.get('label') in (0, 1) and h_idx < pooled.shape[1]:
-                if layer_idx is not None:
-                    X_hs.append(pooled[layer_idx, h_idx].detach().numpy())
-                else:
-                    X_hs.append(None)
-                X_text.append(hop['text'])
-                y.append(hop['label'])
-                is_cf.append(ex.get("is_counterfactual", False))
-                hop_idxs.append(h_idx)
-                group_ids.append(ex.get("clean_pair_id", ex["id"]))
-                
-    return np.array(X_hs) if layer_idx is not None else None, X_text, np.array(y), np.array(is_cf), np.array(hop_idxs), np.array(group_ids)
+        clf = make_probe(seed).fit(X[tr], y[tr])
+        prob[te] = clf.predict_proba(X[te])[:, 1]
+    return prob
 
-def run_advanced_probing_all_layers(labels_file, hs_dir):
-    hs_dir = Path(hs_dir)
-    with open(labels_file) as f:
-        examples = [json.loads(l) for l in f]
-        
-    valid_ex = [ex for ex in examples if (hs_dir / f"{ex['id']}.pt").exists()]
-    
-    # 6. Label Noise Check on Natural Hops
-    natural_failures = [h["match_method"] for e in valid_ex if not e.get("is_counterfactual") 
-                       for h in e.get("hops", []) if h.get("label") == 1]
-    print("=" * 140)
-    print("LABEL NOISE CHECK (Natural failures match method):")
-    print(Counter(natural_failures))
-    print("=" * 140)
 
-    # 3. GroupShuffleSplit to avoid train/test leak
-    groups = [ex.get("clean_pair_id", ex["id"]) for ex in valid_ex]
-    gss = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
-    train_idx, test_idx = next(gss.split(valid_ex, groups=groups))
-    train_ex = [valid_ex[i] for i in train_idx]
-    test_ex = [valid_ex[i] for i in test_idx]
-    
-    # Get available layers
-    sample = torch.load(hs_dir / f"{valid_ex[0]['id']}.pt")
-    layer_indices = sample.get('layer_indices', list(range(sample['pooled'].shape[0])))
-    
-    # Extract base features
-    _, X_train_txt, y_train, _, train_hop_idx, _ = extract_data(train_ex, hs_dir, layer_idx=layer_indices[0])
-    _, X_test_txt, y_test, is_cf_test, test_hop_idx, _ = extract_data(test_ex, hs_dir, layer_idx=layer_indices[0])
-    
-    majority_class_rate = max(np.mean(y_test == 0), np.mean(y_test == 1))
-    print(f"MAJORITY CLASS BASELINE: {majority_class_rate:.3f}")
-    
-    # TF-IDF Text Baseline
-    tfidf = TfidfVectorizer(max_features=1000)
-    X_train_tfidf = tfidf.fit_transform(X_train_txt)
-    X_test_tfidf = tfidf.transform(X_test_txt)
-    
-    clf_text = LogisticRegression(max_iter=1000, class_weight='balanced')
-    clf_text.fit(X_train_tfidf, y_train)
-    y_pred_txt = clf_text.predict(X_test_tfidf)
-    y_prob_txt = clf_text.predict_proba(X_test_tfidf)[:, 1]
-    print(f"TF-IDF TEXT BASELINE    -> Acc: {accuracy_score(y_test, y_pred_txt):.3f} | F1: {f1_score(y_test, y_pred_txt):.3f} | AUROC: {roc_auc_score(y_test, y_prob_txt):.3f}")
-    
-    # Hop Index Baseline
-    max_hops = max(np.max(train_hop_idx), np.max(test_hop_idx)) + 1
-    X_train_hop = np.eye(max_hops)[train_hop_idx]
-    X_test_hop = np.eye(max_hops)[test_hop_idx]
-    clf_hop = LogisticRegression(max_iter=1000, class_weight='balanced')
-    clf_hop.fit(X_train_hop, y_train)
-    y_pred_hop = clf_hop.predict(X_test_hop)
-    y_prob_hop = clf_hop.predict_proba(X_test_hop)[:, 1]
-    print(f"HOP-IDX ONLY BASELINE   -> Acc: {accuracy_score(y_test, y_pred_hop):.3f} | F1: {f1_score(y_test, y_pred_hop):.3f} | AUROC: {roc_auc_score(y_test, y_prob_hop):.3f}")
-    print("=" * 140)
-    
-    # Headers
-    # print(f"{'Layer':<7} | {'Logistic All (Acc|F1|AUC)':<27} | {'Logistic Natural-Only (Acc|AUC)':<33} | {'Linear SVM (Acc)':<18} | {'Small MLP (Acc)':<18}")
-    # print("-" * 140)
-    
-    natural_mask = ~is_cf_test
-    
-    # Skipping the first massive table as we already have this data!
-    # for li in layer_indices:
-    #     pass
+def strata(A, mask_extra=None):
+    """Named boolean masks over rows for reporting."""
+    base = np.ones(len(A["y"]), bool) if mask_extra is None else mask_extra
+    return {"all": base, "natural": base & ~A["cf"], "cf": base & A["cf"]}
 
-    # =====================================================================
-    # 5-FOLD GROUPED CROSS-VALIDATION
-    # =====================================================================
-    print("\n" + "=" * 140)
-    print("5-FOLD GROUPED CROSS-VALIDATION (Logistic Regression)")
-    print("=" * 140)
-    from sklearn.model_selection import GroupKFold
-    
-    gkf = GroupKFold(n_splits=5)
-    print(f"{'Layer':<7} | {'Mean Acc':<10} | {'Std Acc':<10} | {'Mean AUROC':<10} | {'Std AUROC':<10}")
-    print("-" * 65)
-    
-    for li in layer_indices:
-        X_all, _, y_all, _, _, groups_all = extract_data(valid_ex, hs_dir, layer_idx=li)
-        X_all = np.nan_to_num(X_all)
-        
-        if len(X_all) == 0:
-            continue
-            
-        acc_scores = []
-        auc_scores = []
-        
-        for tr_idx, te_idx in gkf.split(X_all, y_all, groups=groups_all):
-            X_tr, X_te = X_all[tr_idx], X_all[te_idx]
-            y_tr, y_te = y_all[tr_idx], y_all[te_idx]
-            
-            if len(np.unique(y_tr)) < 2 or len(np.unique(y_te)) < 2:
+
+def failure_breakdown(A, prob, mask):
+    """Hop-1 failure recall split by hedging / confident, plus FPR on successes."""
+    pred = prob >= 0.5
+    f = mask & (A["y"] == 1)
+    s = mask & (A["y"] == 0)
+    def rate(m):
+        return (float(pred[m].mean()), int(m.sum())) if m.sum() else (float("nan"), 0)
+    return {
+        "hedge_recall": rate(f & A["hedge"]),
+        "confident_recall": rate(f & ~A["hedge"]),
+        "natural_fail_recall": rate(f & ~A["cf"]),
+        "cf_fail_recall": rate(f & A["cf"]),
+        "fpr_on_successes": rate(s),
+    }
+
+
+def text_baselines(A, rows, tr_rows, te_rows):
+    """Baselines that never look at hidden states (train split -> test split)."""
+    out = {}
+    txt = np.array([r["text"] for r in rows], dtype=object)
+    for task, hops in TASKS.items():
+        trm = tr_rows & np.isin(A["hop"], hops)
+        tem = te_rows & np.isin(A["hop"], hops)
+        y_tr, y_te = A["y"][trm], A["y"][tem]
+        res = {}
+        maj = int(round(y_tr.mean()))
+        res["majority"] = binary_metrics(y_te, prob=np.full(len(y_te), float(maj)), pred=np.full(len(y_te), maj))
+        res["hedge_keyword_rule"] = binary_metrics(y_te, prob=A["hedge"][tem].astype(float),
+                                                   pred=A["hedge"][tem].astype(int))
+        tf = TfidfVectorizer(max_features=1000)
+        Xtr = tf.fit_transform(txt[trm]); Xte = tf.transform(txt[tem])
+        c = LogisticRegression(max_iter=1000, class_weight="balanced").fit(Xtr, y_tr)
+        res["tfidf_text"] = binary_metrics(y_te, prob=c.predict_proba(Xte)[:, 1])
+        if len(hops) > 1:
+            oh_tr = np.eye(3)[A["hop"][trm]]; oh_te = np.eye(3)[A["hop"][tem]]
+            c = LogisticRegression(max_iter=1000, class_weight="balanced").fit(oh_tr, y_tr)
+            res["hop_index_only"] = binary_metrics(y_te, prob=c.predict_proba(oh_te)[:, 1])
+        out[task] = res
+    return out
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("legacy_data", nargs="?", default=None)
+    ap.add_argument("legacy_hs", nargs="?", default=None)
+    ap.add_argument("--data", default=None)
+    ap.add_argument("--hs-dir", default=None)
+    ap.add_argument("--out", default="outputs/probing")
+    ap.add_argument("--layers", default="all", help="'all' or comma list, e.g. 8,10,11,12")
+    ap.add_argument("--layer-chunk", type=int, default=7, help="layers loaded into RAM at once")
+    ap.add_argument("--exclude-cf", action="store_true", help="train/test on natural examples only")
+    args = ap.parse_args()
+
+    data = args.data or args.legacy_data or DEFAULT_DATA
+    hs_dir = Path(args.hs_dir or args.legacy_hs or "data/hidden_states")
+    out = Path(args.out); (out / "probes").mkdir(parents=True, exist_ok=True)
+    t0 = time.time()
+
+    examples = load_examples(data, hs_dir=hs_dir)
+    if args.exclude_cf:
+        examples = [e for e in examples if not e.get("is_counterfactual")]
+    tr_idx, te_idx = canonical_split(examples)
+    rows = hop_rows(examples)
+    A = rows_arrays(rows)
+    is_tr_ex = np.zeros(len(examples), bool); is_tr_ex[tr_idx] = True
+    tr_rows = is_tr_ex[A["ei"]]; te_rows = ~tr_rows
+    data_sha = hashlib.sha256(Path(data).read_bytes()).hexdigest()[:16]
+
+    import torch
+    sample = torch.load(hs_dir / f"{examples[0]['id']}.pt", map_location="cpu", weights_only=False)
+    n_layers = sample["pooled"].shape[0]
+    layers = list(range(n_layers)) if args.layers == "all" else [int(x) for x in args.layers.split(",")]
+
+    print("=" * 100)
+    print(f"data={data} (sha256 {data_sha}…)  examples={len(examples)}  "
+          f"train/test examples={len(tr_idx)}/{len(te_idx)}  rows(hops 1-2)={len(rows)}")
+    for task, hops in TASKS.items():
+        for name, m in (("train", tr_rows), ("test", te_rows)):
+            mm = m & np.isin(A["hop"], hops)
+            print(f"  {task:5s} {name:5s}: n={mm.sum():5d}  fail={A['y'][mm].sum():5d} "
+                  f"({100 * A['y'][mm].mean():.1f}%)  cf_rows={A['cf'][mm].sum()}  hedging_fails={(A['hedge'] & (A['y'] == 1))[mm].sum()}")
+
+    results = {"meta": dict(data=str(data), data_sha256_16=data_sha, n_examples=len(examples),
+                            n_train_examples=int(len(tr_idx)), n_test_examples=int(len(te_idx)),
+                            exclude_cf=args.exclude_cf, layers=layers),
+               "text_baselines": text_baselines(A, rows, tr_rows, te_rows),
+               "layers": {}}
+    print("\nTEXT-ONLY BASELINES (train split -> test split, all test rows):")
+    for task, res in results["text_baselines"].items():
+        for name, m in res.items():
+            print(f"  {task:5s} {name:20s} {fmt_metrics(m)}")
+
+    test_probs = {}  # column name -> array over all rows (nan where not applicable)
+    for c0 in range(0, len(layers), args.layer_chunk):
+        chunk = layers[c0:c0 + args.layer_chunk]
+        X = load_hidden(examples, rows, hs_dir, chunk)
+        print(f"\n[{time.time() - t0:.0f}s] loaded layers {chunk}")
+        for L in chunk:
+            XL = X[L]
+            lr = {}
+            fitted = {}
+            for task, hops in TASKS.items():
+                tm = np.isin(A["hop"], hops)
+                trm = tr_rows & tm; tem = te_rows & tm
+                # (a) 5-fold grouped CV inside the train split -> layer selection
+                p_oof = np.full(len(rows), np.nan)
+                p_oof[trm] = oof_cv(XL[trm], A["y"][trm], A["group"][trm])
+                cv = {s: binary_metrics(A["y"][m], p_oof[m]) for s, m in strata(A, trm).items() if m.sum()}
+                # (b) fit on full train split -> held-out test
+                clf = make_probe().fit(XL[trm], A["y"][trm])
+                fitted[task] = clf
+                p_te = np.full(len(rows), np.nan)
+                p_te[tem] = clf.predict_proba(XL[tem])[:, 1]
+                test = {s: binary_metrics(A["y"][m], p_te[m]) for s, m in strata(A, tem).items() if m.sum()}
+                lr[task] = {"cv_train": cv, "test": test}
+                if task == "hop1":
+                    lr[task]["breakdown_cv_train"] = failure_breakdown(A, p_oof, trm)
+                    lr[task]["breakdown_test"] = failure_breakdown(A, p_te, tem)
+                    # internal -> external: does the hop-1 score predict a wrong FINAL answer?
+                    m = tem
+                    lr[task]["test_predicts_final_wrong"] = {
+                        "probe_auroc": binary_metrics(~A["final_correct"][m], p_te[m]).get("auroc"),
+                        "gold_hop1_label_auroc": binary_metrics(~A["final_correct"][m], A["y"][m].astype(float)).get("auroc"),
+                    }
+                test_probs[f"{task}_L{L}"] = p_te
+                joblib.dump({"model": clf, "task": task, "hops": list(hops), "layer": L,
+                             "trained_on": "canonical train split (GroupShuffleSplit seed 42, 80%)",
+                             "data_sha256_16": data_sha, "n_train": int(trm.sum()),
+                             "exclude_cf": args.exclude_cf},
+                            out / "probes" / f"{task}_probe_layer{L}.joblib")
+            # cross-hop generalisation: hop-1 probe applied to held-out hop-2 rows
+            m2 = te_rows & (A["hop"] == 2)
+            lr["cross_hop1_to_hop2_test"] = binary_metrics(A["y"][m2], fitted["hop1"].predict_proba(XL[m2])[:, 1])
+            results["layers"][L] = lr
+            h1 = lr["hop1"]
+            print(f"[{time.time() - t0:.0f}s] L{L:2d} | hop1 CV(train,natural) auroc={h1['cv_train']['natural'].get('auroc', np.nan):.3f} "
+                  f"| hop1 TEST all: {fmt_metrics(h1['test']['all'], ('acc', 'bacc', 'auroc', 'tpr', 'fpr'))} "
+                  f"| hop2 TEST auroc={lr['hop2']['test']['all'].get('auroc', np.nan):.3f} "
+                  f"| hop12 TEST natural auroc={lr['hop12']['test']['natural'].get('auroc', np.nan):.3f}", flush=True)
+        del X
+
+    # ── layer selection (train-CV only) + final held-out report ───────────────
+    def best_layer(task):
+        return max(layers, key=lambda L: results["layers"][L][task]["cv_train"]["natural"].get("auroc", -1))
+
+    sel = {task: best_layer(task) for task in TASKS}
+    results["selected_layers"] = sel
+    X = load_hidden(examples, rows, hs_dir, sorted(set(sel.values())))
+    print("\n" + "=" * 100)
+    print("SELECTED LAYERS (by 5-fold CV AUROC on the TRAIN split, natural rows):", sel)
+    final = {}
+    for task, L in sel.items():
+        tem = te_rows & np.isin(A["hop"], TASKS[task])
+        p = test_probs[f"{task}_L{L}"]
+        rep = {}
+        for s, m in strata(A, tem).items():
+            if not m.sum():
                 continue
-                
-            clf = make_pipeline(StandardScaler(), LogisticRegression(max_iter=1000, class_weight='balanced'))
-            clf.fit(X_tr, y_tr)
-            y_pred = clf.predict(X_te)
-            y_prob = clf.predict_proba(X_te)[:, 1]
-            
-            acc_scores.append(accuracy_score(y_te, y_pred))
-            auc_scores.append(roc_auc_score(y_te, y_prob))
-            
-        if acc_scores:
-            print(f"Layer {li:<1} | {np.mean(acc_scores):.3f}      | ±{np.std(acc_scores):.3f}   | {np.mean(auc_scores):.3f}       | ±{np.std(auc_scores):.3f}")
-    
-    print("=" * 140)
+            rep[s] = binary_metrics(A["y"][m], p[m])
+            if s != "cf":
+                rep[s]["ci95"] = {k: grouped_bootstrap_ci(A["y"][m], p[m], A["group"][m], k)
+                                  for k in ("auroc", "bacc", "tpr", "fpr")}
+        # shuffled-label control: same probe, same split, permuted train labels
+        trm = tr_rows & np.isin(A["hop"], TASKS[task])
+        y_shuf = np.random.RandomState(0).permutation(A["y"][trm])
+        ctrl = make_probe().fit(X[L][trm], y_shuf)
+        rep["shuffled_label_control"] = binary_metrics(A["y"][tem], ctrl.predict_proba(X[L][tem])[:, 1])
+        final[task] = {"layer": L, **rep}
+        print(f"\n[{task}] layer {L} — HELD-OUT TEST")
+        for s in ("all", "natural", "cf"):
+            if s in rep:
+                ci = rep[s].get("ci95", {})
+                ci_s = "  ".join(f"{k}95%=[{v[0]:.3f},{v[1]:.3f}]" for k, v in ci.items())
+                print(f"  {s:8s} {fmt_metrics(rep[s])}  {ci_s}")
+        print(f"  shuffled-label control: {fmt_metrics(rep['shuffled_label_control'], ('acc', 'bacc', 'auroc'))}")
+    results["final_test"] = final
+    bd = results["layers"][sel["hop1"]]["hop1"]
+    print(f"\n[hop1] failure breakdown at layer {sel['hop1']} (recall at threshold 0.5; value, n):")
+    for split in ("breakdown_cv_train", "breakdown_test"):
+        print(f"  {split}: " + "  ".join(f"{k}={v[0]:.3f}(n={v[1]})" for k, v in bd[split].items()))
+    print(f"  hop-1 score -> wrong final answer (test): {bd['test_predicts_final_wrong']}")
 
-    # =====================================================================
-    # EXPERIMENTAL CONTROLS (Hop-1 Only & MLP Shuffled Label)
-    # =====================================================================
-    print("\n" + "=" * 140)
-    print("EXPERIMENTAL CONTROLS")
-    print("=" * 140)
-    
-    # We will pick the best layer based on logistic accuracy on all test data (usually layer 10)
-    best_layer_idx = 10 if 10 in layer_indices else layer_indices[len(layer_indices)//2]
-    
-    print(f"Running controls on Layer {best_layer_idx}")
-    X_train_hs, _, _, _, _, _ = extract_data(train_ex, hs_dir, layer_idx=best_layer_idx)
-    X_test_hs, _, _, _, _, _ = extract_data(test_ex, hs_dir, layer_idx=best_layer_idx)
-    
-    # 1. Shuffled-Label Control for MLP
-    mlp = make_pipeline(StandardScaler(), MLPClassifier(hidden_layer_sizes=(128, 64), max_iter=500, random_state=42))
-    
-    # Shuffle labels
-    y_train_shuffled = np.random.permutation(y_train)
-    mlp.fit(X_train_hs, y_train_shuffled)
-    y_pred_mlp_shuf = mlp.predict(X_test_hs)
-    shuf_acc = accuracy_score(y_test, y_pred_mlp_shuf)
-    print(f"[Control] MLP with SHUFFLED LABELS -> Acc: {shuf_acc:.3f} (Should be near chance/majority class)")
-    
-    # 2. Hop-1 Only Check
-    # Filter train and test sets for only hop_idx == 0
-    train_h1_mask = train_hop_idx == 0
-    test_h1_mask = test_hop_idx == 0
-    
-    if np.sum(train_h1_mask) > 0 and np.sum(test_h1_mask) > 0:
-        X_train_hs_h1 = X_train_hs[train_h1_mask]
-        y_train_h1 = y_train[train_h1_mask]
-        X_test_hs_h1 = X_test_hs[test_h1_mask]
-        y_test_h1 = y_test[test_h1_mask]
-        
-        # Train and eval Logistic probe on Hop 1 only
-        clf_h1 = make_pipeline(StandardScaler(), LogisticRegression(max_iter=1000, class_weight='balanced'))
-        clf_h1.fit(X_train_hs_h1, y_train_h1)
-        y_pred_h1 = clf_h1.predict(X_test_hs_h1)
-        y_prob_h1 = clf_h1.predict_proba(X_test_hs_h1)[:, 1]
-        
-        print(f"\n[Control] HOP-1 ONLY LOGISTIC PROBE (Layer {best_layer_idx})")
-        print(f"Train N={len(y_train_h1)}, Test N={len(y_test_h1)}")
-        print(f"Majority Class Rate: {max(np.mean(y_test_h1 == 0), np.mean(y_test_h1 == 1)):.3f}")
-        print(f"Acc: {accuracy_score(y_test_h1, y_pred_h1):.3f} | AUROC: {roc_auc_score(y_test_h1, y_prob_h1):.3f}")
-        # HEDGING VS CONFIDENTLY WRONG ANALYSIS
-        hedging_keywords = ["no information", "no mention", "not mentioned", "no relevant information", "not found", "cannot find", "does not mention"]
-        X_test_text_h1 = np.array(X_test_text)[test_h1_mask]
-        
-        fail_mask = y_test_h1 == 1
-        X_fail_text = X_test_text_h1[fail_mask]
-        X_fail_hs = X_test_h1[fail_mask]
-        y_fail = y_test_h1[fail_mask]  # all 1s
-        
-        y_fail_pred = clf_h1.predict(X_fail_hs)
-        
-        is_hedging = np.array([any(k in t.lower() for k in hedging_keywords) for t in X_fail_text])
-        
-        hedge_acc = np.mean(y_fail_pred[is_hedging] == y_fail[is_hedging]) if np.sum(is_hedging) > 0 else 0
-        wrong_acc = np.mean(y_fail_pred[~is_hedging] == y_fail[~is_hedging]) if np.sum(~is_hedging) > 0 else 0
-        
-        print(f"\n[Control] HEDGING VS CONFIDENTLY WRONG FAILURES (Layer {best_layer_idx}, Hop 1 Test Set)")
-        print(f"Total Failures in Test Set: {len(y_fail)}")
-        print(f"Hedging Failures: {np.sum(is_hedging)} | Probe Accuracy on Hedging: {hedge_acc:.3f}")
-        print(f"Confident Wrong Failures: {np.sum(~is_hedging)} | Probe Accuracy on Confident Wrong: {wrong_acc:.3f}")
-
-    else:
-        print("\n[Control] Not enough Hop-1 examples to run Hop-1 Only check.")
-
-    # 3. Cross-Hop Generalization (Train Hop 1, Test Hop 2)
-    train_h2_mask = train_hop_idx == 1
-    test_h2_mask = test_hop_idx == 1
-    
-    # We already have Hop 1 logistic regression trained (clf_h1). Let's test it on Hop 2.
-    if np.sum(train_h1_mask) > 0 and (np.sum(train_h2_mask) > 0 or np.sum(test_h2_mask) > 0):
-        # Pool all hop 2 examples we have
-        # We need to extract them from the original train/test mix, let's just grab them:
-        X_all_hs, _, y_all, _, hop_all, _ = extract_data(valid_ex, hs_dir, layer_idx=best_layer_idx)
-        
-        h2_mask_all = hop_all == 1
-        X_all_h2 = X_all_hs[h2_mask_all]
-        y_all_h2 = y_all[h2_mask_all]
-        
-        if len(y_all_h2) > 0:
-            y_pred_h2 = clf_h1.predict(X_all_h2)
-            y_prob_h2 = clf_h1.predict_proba(X_all_h2)[:, 1]
-            
-            print(f"\n[Control] CROSS-HOP GENERALIZATION (Train Hop 1 -> Test Hop 2, Layer {best_layer_idx})")
-            print(f"Test N={len(y_all_h2)}")
-            print(f"Acc: {accuracy_score(y_all_h2, y_pred_h2):.3f} | AUROC: {roc_auc_score(y_all_h2, y_prob_h2):.3f}")
-    
-    # 4. Bootstrap/Multiple-Seed Error Bars (Layers 9-13)
-    print(f"\n[Control] MULTIPLE-SEED BOOTSTRAP (Layers 8-14)")
-    print(f"{'Layer':<7} | {'Mean Acc':<10} | {'Std Dev':<10}")
-    print("-" * 40)
-    
-    seeds = [42, 1337, 2026, 9999, 12345]
-    layers_to_test = [l for l in layer_indices if 8 <= l <= 14]
-    
-    for li in layers_to_test:
-        X_tr, _, _, _, _, _ = extract_data(train_ex, hs_dir, layer_idx=li)
-        X_te, _, _, _, _, _ = extract_data(test_ex, hs_dir, layer_idx=li)
-        
-        accs = []
-        for s in seeds:
-            clf_boot = make_pipeline(StandardScaler(), LogisticRegression(max_iter=1000, class_weight='balanced', random_state=s))
-            # Resample train data
-            np.random.seed(s)
-            indices = np.random.choice(len(X_tr), len(X_tr), replace=True)
-            clf_boot.fit(X_tr[indices], y_train[indices])
-            accs.append(accuracy_score(y_test, clf_boot.predict(X_te)))
-            
-        mean_acc = np.mean(accs)
-        std_acc = np.std(accs)
-        print(f"Layer {li:<1} | {mean_acc:.3f}      | ±{std_acc:.3f}")
-    
-    print("=" * 140)
+    # ── write outputs ──────────────────────────────────────────────────────────
+    with open(out / "results.json", "w") as f:
+        json.dump(results, f, indent=1, default=lambda o: o.item() if hasattr(o, "item") else str(o))
+    write_markdown(results, out / "results.md")
+    with open(out / "test_predictions.csv", "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        cols = sorted(test_probs)
+        w.writerow(["id", "hop_idx", "label", "is_cf", "is_hedge", "final_answer_correct"] + cols)
+        for i in np.flatnonzero(te_rows):
+            r = rows[i]
+            w.writerow([r["id"], r["hop"], r["y"], int(r["cf"]), int(r["hedge"]), int(r["final_correct"])]
+                       + [("" if np.isnan(test_probs[c][i]) else f"{test_probs[c][i]:.5f}") for c in cols])
+    write_qualitative(examples, rows, A, test_probs[f"hop1_L{sel['hop1']}"], te_rows, sel["hop1"],
+                      out / "qualitative_hop1.md")
+    print(f"\n[done in {time.time() - t0:.0f}s] outputs in {out}/ : results.json, results.md, "
+          f"test_predictions.csv, qualitative_hop1.md, probes/*.joblib")
 
 
-    # =====================================================================
-    
-    # Save the trained Hop-1 probe for ALL layers for Phase 5 (RAG System)
-    print("\n[+] Saving trained Hop-1 probes for all layers to disk...")
-    for li in layer_indices:
-        X_tr, _, y_tr, _, hop_idx_tr, _ = extract_data(train_ex, hs_dir, layer_idx=li)
-        h1_mask_tr = hop_idx_tr == 1
-        X_tr_h1 = X_tr[h1_mask_tr]
-        y_tr_h1 = y_tr[h1_mask_tr]
-        
-        if len(y_tr_h1) > 0:
-            clf_li = make_pipeline(StandardScaler(), LogisticRegression(max_iter=1000, class_weight='balanced', random_state=42))
-            clf_li.fit(X_tr_h1, y_tr_h1)
-            probe_save_path = hs_dir.parent / f"hop1_probe_layer{li}.joblib"
-            joblib.dump(clf_li, probe_save_path)
-    print(f"[+] Saved {len(layer_indices)} layer probes to {hs_dir.parent}")
+def write_markdown(R, path):
+    L = []
+    L.append("# Probing results (v2: hops 1-2 only, canonical split)\n")
+    m = R["meta"]
+    L.append(f"Examples: {m['n_examples']} (train {m['n_train_examples']} / test {m['n_test_examples']}); "
+             f"data sha256 prefix `{m['data_sha256_16']}`.\n")
+    L.append("## Text-only baselines (test split)\n")
+    L.append("| task | baseline | acc | bal. acc | AUROC | TPR | FPR | majority |\n|---|---|---|---|---|---|---|---|")
+    for task, res in R["text_baselines"].items():
+        for name, x in res.items():
+            L.append(f"| {task} | {name} | {x.get('acc', float('nan')):.3f} | {x.get('bacc', float('nan')):.3f} | "
+                     f"{x.get('auroc', float('nan')):.3f} | {x.get('tpr', float('nan')):.3f} | {x.get('fpr', float('nan')):.3f} | {x.get('majority', float('nan')):.3f} |")
+    L.append("\n## Per-layer probes\n")
+    L.append("CV = 5-fold grouped CV inside the train split (natural rows). TEST = held-out test split (all rows).\n")
+    L.append("| layer | hop1 CV AUROC | hop1 TEST acc | bal.acc | AUROC | TPR | FPR | hop1 confident-fail recall (CV) | hop2 TEST AUROC | hop1+2 TEST natural AUROC | hop1→hop2 AUROC |")
+    L.append("|---|---|---|---|---|---|---|---|---|---|---|")
+    for Lr, x in sorted(R["layers"].items(), key=lambda kv: int(kv[0])):
+        h1 = x["hop1"]; t = h1["test"]["all"]
+        L.append(f"| {Lr} | {h1['cv_train']['natural'].get('auroc', float('nan')):.3f} | {t['acc']:.3f} | {t['bacc']:.3f} | "
+                 f"{t.get('auroc', float('nan')):.3f} | {t['tpr']:.3f} | {t['fpr']:.3f} | "
+                 f"{h1['breakdown_cv_train']['confident_recall'][0]:.3f} | "
+                 f"{x['hop2']['test']['all'].get('auroc', float('nan')):.3f} | "
+                 f"{x['hop12']['test']['natural'].get('auroc', float('nan')):.3f} | "
+                 f"{x['cross_hop1_to_hop2_test'].get('auroc', float('nan')):.3f} |")
+    L.append(f"\n## Selected layers (by train-split CV): {R['selected_layers']}\n")
+    for task, x in R["final_test"].items():
+        L.append(f"### {task} @ layer {x['layer']} (held-out test)\n")
+        for s in ("all", "natural", "cf"):
+            if s in x:
+                ci = x[s].get("ci95", {})
+                ci_s = ", ".join(f"{k} 95% CI [{v[0]:.3f}, {v[1]:.3f}]" for k, v in ci.items())
+                L.append(f"- **{s}**: {fmt_metrics(x[s])}" + (f" — {ci_s}" if ci_s else ""))
+        L.append(f"- shuffled-label control: {fmt_metrics(x['shuffled_label_control'], ('acc', 'bacc', 'auroc'))}\n")
+    Path(path).write_text("\n".join(L), encoding="utf-8")
 
-    # QUALITATIVE ERROR ANALYSIS
-    # =====================================================================
-    print("\n" + "=" * 140)
-    print("QUALITATIVE PROBE ANALYSIS (Top 10 Most Confident Hop-1 Failure Predictions)")
-    print("=" * 140)
-    
-    if np.sum(test_h1_mask) > 0:
-        qual_results = []
-        # We need the original text. Let's zip X_test_txt with the predictions.
-        # test_h1_mask masks the flattened array. 
-        # But we want the Question and Gold Entity from test_ex.
-        # Let's just manually re-evaluate test_ex for Hop 1 to have all metadata.
-        
-        for ex in test_ex:
-            pt_path = hs_dir / f"{ex['id']}.pt"
-            if not pt_path.exists(): continue
-            
-            data = torch.load(pt_path)
-            pooled = data['pooled']
-            
-            for hop in ex.get('hops', []):
-                h_idx = hop['hop_idx'] - 1
-                if h_idx == 0 and hop.get('label') in (0, 1) and h_idx < pooled.shape[1]:
-                    vec = pooled[best_layer_idx, h_idx].detach().numpy()
-                    vec = np.nan_to_num(vec)
-                    
-                    # Predict probability of failure (label=1)
-                    prob_fail = clf_h1.predict_proba([vec])[0][1]
-                    
-                    qual_results.append({
-                        "prob_fail": prob_fail,
-                        "true_label": hop['label'],
-                        "question": ex['question'],
-                        "gold_entity": hop.get('wiki_links', ['Unknown'])[0] if hop.get('wiki_links') else 'Unknown',
-                        "generated_text": hop['text']
-                    })
-                    
-        # Sort by most confident failure predictions
-        qual_results.sort(key=lambda x: x["prob_fail"], reverse=True)
-        
-        for i, res in enumerate(qual_results[:10]):
-            print(f"\n--- Sample {i+1} ---")
-            print(f"Question:       {res['question']}")
-            print(f"Gold Entity:    {res['gold_entity']}")
-            print(f"Generated Hop:  {res['generated_text']}")
-            print(f"True Label:     {'1 (Hallucination)' if res['true_label'] == 1 else '0 (Success)'}")
-            print(f"Probe Predicts: {res['prob_fail']*100:.1f}% chance of Failure")
-            
-    print("\n" + "=" * 140)
+
+def write_qualitative(examples, rows, A, prob, te_rows, layer, path):
+    m = te_rows & (A["hop"] == 1)
+    idx = np.flatnonzero(m)
+    def block(title, sel, k):
+        out = [f"\n## {title}\n"]
+        for i in sel[:k]:
+            r = rows[i]; e = examples[r["ei"]]
+            gold = e["reasoning_graph"][0]["gold_entity"]
+            out.append(f"- p(fail)={prob[i]:.3f} | label={r['y']} | {'CF' if r['cf'] else 'natural'}\n"
+                       f"  - Q: {e['question']}\n  - gold hop-1 entity: {gold}\n  - hop 1: {r['text']}")
+        return out
+    order = idx[np.argsort(-prob[idx])]
+    L = [f"# Qualitative hop-1 analysis (layer {layer}, held-out test split)"]
+    L += block("Most confident failure predictions — natural examples (true failures)",
+               [i for i in order if not A["cf"][i] and A["y"][i] == 1], 10)
+    L += block("False alarms — natural successes the probe flags as failures",
+               [i for i in order if A["y"][i] == 0], 10)
+    L += block("Missed failures — natural failures with the lowest p(fail)",
+               [i for i in order[::-1] if not A["cf"][i] and A["y"][i] == 1], 10)
+    L += block("Counterfactual (entity-not-in-context) failures",
+               [i for i in order if A["cf"][i]], 5)
+    Path(path).write_text("\n".join(L), encoding="utf-8")
+
 
 if __name__ == "__main__":
-    if len(sys.argv) < 3:
-        print("Usage: python advanced_probing.py <labels_jsonl> <hs_dir>")
-    else:
-        run_advanced_probing_all_layers(sys.argv[1], sys.argv[2])
+    main()

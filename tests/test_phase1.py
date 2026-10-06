@@ -207,7 +207,7 @@ class MockTokenizer:
             res += "[ASSISTANT]"
         return res.strip()
 
-prompt = build_prompt("Who is X?", "You are a reasoner.", MockTokenizer())
+prompt = build_prompt("Who is X?", "", "You are a reasoner.", MockTokenizer())   # (question, context, system, tok)
 assert "<|system|>" not in prompt
 assert "<|end|>" not in prompt
 assert "[SYSTEM] You are a reasoner." in prompt
@@ -225,7 +225,57 @@ assert _answer_f1("James Cameron", "Christopher Nolan") == 0.0
 assert _answer_f1("", "test") == 0.0
 print("[PASS] answer F1")
 
+# ── Test 15: hops beyond the 2-edge gold graph are unlabeled, not failures ──
+EXTRA_EX = {
+    **BASE_EX,
+    "id": "test_004",
+    "generated_cot": (
+        "<hop1>Inception was directed by Christopher Nolan.</hop1>"
+        "<hop2>His mother is Lynda Nolan.</hop2>"
+        "<hop3>Nolan was born in London.</hop3>"
+    ),
+}
+labeled_extra = label_example(EXTRA_EX, alias_matcher)
+by_idx = {h["hop_idx"]: h for h in labeled_extra["hops"]}
+assert by_idx[1]["label"] == 0 and by_idx[2]["label"] == 0
+assert by_idx[3]["label"] == -1 and by_idx[3]["match_method"] == "extra_hop", by_idx[3]
+assert labeled_extra["first_fail_hop"] is None, labeled_extra["first_fail_hop"]
+print("[PASS] extra hops -> label -1, not failures")
+
+# ── Test 16: post-hoc rule == labeler; old extra-hop failure is relabeled ──
+from phase1_dataset.hop_rules import apply_extra_hop_rule
+old = {"reasoning_graph": BASE_EX["reasoning_graph"],
+       "hops": [{"hop_idx": 1, "label": 0, "bridging_entity_gold": ""},
+                {"hop_idx": 2, "label": 1, "bridging_entity_gold": ""},
+                {"hop_idx": 3, "label": 1, "bridging_entity_gold": ""}],
+       "first_fail_hop": 2}
+apply_extra_hop_rule(old)
+assert [h["label"] for h in old["hops"]] == [0, 1, -1]
+assert old["hops"][2]["label_v1"] == 1
+assert old["hops"][1]["bridging_entity_gold"] == "Lynda Nolan"   # back-filled from the graph
+assert old["first_fail_hop"] == 2
+print("[PASS] apply_extra_hop_rule()")
+
+# ── Test 17: shared split keeps a CF with its clean twin; metrics report FPR ──
+import numpy as np
+from lf_common import binary_metrics, canonical_split, hop_rows
+exs = []
+for i in range(50):
+    exs.append({"id": f"q{i}", "hops": [{"hop_idx": 1, "label": 0, "text": "a"},
+                                         {"hop_idx": 3, "label": -1, "text": "x"}]})
+    if i % 5 == 0:
+        exs.append({"id": f"q{i}_cf", "clean_pair_id": f"q{i}", "is_counterfactual": True,
+                    "hops": [{"hop_idx": 1, "label": 1, "text": "no mention of it"}]})
+tr, te = canonical_split(exs)
+side = {exs[i]["id"]: "tr" for i in tr} | {exs[i]["id"]: "te" for i in te}
+assert all(side[f"q{i}_cf"] == side[f"q{i}"] for i in range(0, 50, 5))
+rows = hop_rows(exs)
+assert all(r["hop"] in (1, 2) for r in rows) and sum(r["hedge"] for r in rows) == 10
+m = binary_metrics([0, 0, 1, 1], prob=[0.9, 0.9, 0.9, 0.9])
+assert m["tpr"] == 1.0 and m["fpr"] == 1.0          # flagging everything is caught by FPR
+print("[PASS] lf_common split / rows / metrics")
+
 print()
 print("=" * 55)
-print("  ALL 14 TESTS PASSED")
+print("  ALL 17 TESTS PASSED")
 print("=" * 55)

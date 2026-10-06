@@ -1,0 +1,153 @@
+# Qualitative hop-1 analysis (layer 10, held-out test split)
+
+## Most confident failure predictions — natural examples (true failures)
+
+- p(fail)=1.000 | label=1 | natural
+  - Q: What is the date of birth of the composer of film Daddy-O?
+  - gold hop-1 entity: John Williams
+  - hop 1: From the context, I find that the film Daddy-O was released in 1958.
+- p(fail)=1.000 | label=1 | natural
+  - Q: What is the place of birth of the composer of film Rangan Style?
+  - gold hop-1 entity: Gurukiran
+  - hop 1: From the context, I find that the film Rangan Style is a Kannada "Romantic Comedy Drama" film.
+- p(fail)=1.000 | label=1 | natural
+  - Q: When is the composer of film Astral City: A Spiritual Journey 's birthday?
+  - gold hop-1 entity: Philip Glass
+  - hop 1: From the context, I find that the composer of film Astral City: A Spiritual Journey is Wagner de Assis.
+- p(fail)=1.000 | label=1 | natural
+  - Q: What is the place of birth of the director of film Kansas Raiders?
+  - gold hop-1 entity: Ray Enright
+  - hop 1: From the context, I find that Kansas Raiders is a 1950 Technicolor Western film.
+- p(fail)=1.000 | label=1 | natural
+  - Q: Who is the spouse of the founder of magazine Camera Notes?
+  - gold hop-1 entity: Alfred Stieglitz
+  - hop 1: From the context, I find that the founder of magazine Camera Notes is not explicitly stated, but it was published by the Camera Club of New York.
+- p(fail)=1.000 | label=1 | natural
+  - Q: What nationality is the director of film Hellzapoppin' (Film)?
+  - gold hop-1 entity: H. C. Potter
+  - hop 1: From the context, I find that Hellzapoppin' is a 1941 film adaptation of "Hellzapoppin'", the musical that ran on Broadway from 1938 to 1941.
+- p(fail)=1.000 | label=1 | natural
+  - Q: When was the director of film Branding Broadway born?
+  - gold hop-1 entity: William S. Hart
+  - hop 1: From the context, I find that Branding Broadway is a 1918 American western film.
+- p(fail)=1.000 | label=1 | natural
+  - Q: Where was the composer of song Zidane Y Va Marquer born?
+  - gold hop-1 entity: Salif Keita
+  - hop 1: From the context, I find that the composer of the song "Zidane y va marquer" is Sébastien Cauet.
+- p(fail)=1.000 | label=1 | natural
+  - Q: What is the award that the composer of film Grizzly Man earned?
+  - gold hop-1 entity: Richard Thompson
+  - hop 1: From the context, I find that the composer of film Grizzly Man is Werner Herzog.
+- p(fail)=1.000 | label=1 | natural
+  - Q: Where was the place of death of the composer of film Ninnistham Ennishtam?
+  - gold hop-1 entity: Kannur Rajan
+  - hop 1: From the context, I find that Ninnistham Ennishtam is a 1986 Indian Malayalam-language film.
+
+## False alarms — natural successes the probe flags as failures
+
+- p(fail)=1.000 | label=0 | natural
+  - Q: Who is the paternal grandmother of Prince Francis Ernest Of Hesse-Darmstadt?
+  - gold hop-1 entity: Ernest Louis of Hesse-Darmstadt
+  - hop 1: From the context, I find that Landgravine Elisabeth Amalie of Hesse-Darmstadt was the wife of Prince-elector of the Palatinate.
+- p(fail)=1.000 | label=0 | natural
+  - Q: Which country the director of film Hell Morgan'S Girl is from?
+  - gold hop-1 entity: Joseph De Grasse
+  - hop 1: From the context, I find that Hell Morgan's Girl is a 1917 American silent drama film.
+- p(fail)=0.999 | label=0 | natural
+  - Q: What is the award that the performer of song The Best Way To Travel won?
+  - gold hop-1 entity: Moody Blues
+  - hop 1: From the context, I find that the Moody Blues are described as pioneers in the development of art rock and progressive rock.
+- p(fail)=0.999 | label=0 | natural
+  - Q: Which country the director of film Living Free is from?
+  - gold hop-1 entity: Jack Couffer
+  - hop 1: From the context, I find that the film "Living Free" is a 1972 British drama film.
+- p(fail)=0.999 | label=0 | natural
+  - Q: Which country the composer of film Aambala is from?
+  - gold hop-1 entity: Hiphop Tamizha
+  - hop 1: From the context, I find that Aambala is a 2015 Indian Tamil-language Parody action comedy film.
+- p(fail)=0.995 | label=0 | natural
+  - Q: When is Sir Thomas Myddelton, 2Nd Baronet's father's birthday?
+  - gold hop-1 entity: Sir Thomas Myddelton, 1st Baronet
+  - hop 1: From the context, I find that Sir Thomas Myddelton, 1st Baronet's birthday is not mentioned.
+- p(fail)=0.993 | label=0 | natural
+  - Q: What nationality is the director of film Making Love?
+  - gold hop-1 entity: Arthur Hiller
+  - hop 1: From the context, I find that Making Love is a 1982 American drama film.
+- p(fail)=0.987 | label=0 | natural
+  - Q: What is the place of birth of the composer of song Harbour Lights (Song)?
+  - gold hop-1 entity: Hugh Williams
+  - hop 1: From the context, I find that the composer of the song "Harbour Lights" is Hugh Williams, who is pseudonymously credited as Will Grosz.
+- p(fail)=0.979 | label=0 | natural
+  - Q: Which award the performer of song Since You'Re Gone got?
+  - gold hop-1 entity: Cars
+  - hop 1: From the context, I find that the Cars were named "Best New Artist" in the 1978 "Rolling Stone" Readers' Poll.
+- p(fail)=0.973 | label=0 | natural
+  - Q: Which country the director of film Tarazu is from?
+  - gold hop-1 entity: Vimal Kumar
+  - hop 1: From the context, I find that Tarazu is an Indian action thriller movie.
+
+## Missed failures — natural failures with the lowest p(fail)
+
+- p(fail)=0.000 | label=1 | natural
+  - Q: What nationality is Mike Tindall's wife?
+  - gold hop-1 entity: Zara Phillips
+  - hop 1: From the context, I find that Zara Tindall is the daughter of Princess Anne and Mark Phillips.
+- p(fail)=0.000 | label=1 | natural
+  - Q: What nationality is the composer of film Ghar Ki Laaj?
+  - gold hop-1 entity: Ravindra Jain
+  - hop 1: From the context, I find that Ghar Ki Laaj is a 1979 Bollywood film directed by B. R. Ishara.
+- p(fail)=0.000 | label=1 | natural
+  - Q: Which country the performer of song Act Naturally is from?
+  - gold hop-1 entity: Buck Owens
+  - hop 1: From the context, I find that the performer of song Act Naturally is Johnny Russell.
+- p(fail)=0.001 | label=1 | natural
+  - Q: Where was the mother of Anna Freud born?
+  - gold hop-1 entity: Martha Bernays
+  - hop 1: From the context, I find that Anna Freud was born in Vienna.
+- p(fail)=0.001 | label=1 | natural
+  - Q: Who is Charles Ii, Duke Of Guelders's maternal grandmother?
+  - gold hop-1 entity: Catharine of Bourbon
+  - hop 1: From the context, I find that Reginald II, Duke of Guelders, is the father of Catherine of Guelders.
+- p(fail)=0.004 | label=1 | natural
+  - Q: Who is the maternal grandfather of Margaret Of Villehardouin?
+  - gold hop-1 entity: Anna Komnene Doukaina
+  - hop 1: From the context, I find that William II of Villehardouin is the father of Margaret of Villehardouin.
+- p(fail)=0.006 | label=1 | natural
+  - Q: Where was the place of death of Alexandra Ramm-Pfemfert's husband?
+  - gold hop-1 entity: Franz Pfemfert
+  - hop 1: From the context, I find that the place of death of Alexandra Ramm-Pfemfert's husband is mentioned in the section titled "Beaulieu-sur-Loire" as the place where Jacques MacDonald, a French general, died.
+- p(fail)=0.012 | label=1 | natural
+  - Q: When was the company that published Men'S Fitness (British Magazine) founded?
+  - gold hop-1 entity: Dennis
+  - hop 1: From the context, I find that Men's Fitness is a men's magazine published by American Media, Inc.
+- p(fail)=0.016 | label=1 | natural
+  - Q: Who is the spouse of the composer of film Joker (2012 Film)?
+  - gold hop-1 entity: Shirish Kunder
+  - hop 1: From the context, I find that the composer of the film Joker (2012 film) is Walter Ulfig.
+- p(fail)=0.018 | label=1 | natural
+  - Q: What nationality is the performer of song Sick And Tired (Chris Kenner Song)?
+  - gold hop-1 entity: Fats Domino
+  - hop 1: From the context, I find that the performer of the song "Sick and Tired" is Chris Kenner.
+
+## Counterfactual (entity-not-in-context) failures
+
+- p(fail)=1.000 | label=1 | CF
+  - Q: Where was the director of film Viscount Mountgarret's born?
+  - gold hop-1 entity: John Rawlins
+  - hop 1: From the context, I find that there is no mention of a director named Viscount Mountgarret.
+- p(fail)=1.000 | label=1 | CF
+  - Q: When is Told In The Hills husband's birthday?
+  - gold hop-1 entity: John II Komnenos
+  - hop 1: There is no relevant information about a person named Told In The Hills in the provided context.
+- p(fail)=1.000 | label=1 | CF
+  - Q: Who is the child of the director of film Aarambha?
+  - gold hop-1 entity: Roberto Roberti
+  - hop 1: There is no mention of the director of film Aarambha in the context.
+- p(fail)=1.000 | label=1 | CF
+  - Q: When did Bayan Khutugh's father die?
+  - gold hop-1 entity: Henry Barraud
+  - hop 1: There is no information about Bayan Khutugh's father in the context.
+- p(fail)=1.000 | label=1 | CF
+  - Q: Where was the place of death of the director of film Told In The Hills?
+  - gold hop-1 entity: Ray Enright
+  - hop 1: There is no mention of the director of film "Told In The Hills" in the context.

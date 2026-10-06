@@ -16,6 +16,8 @@ Labeling pipeline per hop
   2. For each hop, look up the gold entity from the reasoning graph.
   3. Run EntityMatcher (3-tier + optional LLM judge).
   4. Assign label 0 (success) or 1 (failure).
+     Hops beyond the gold graph (hop_idx > len(reasoning_graph)) get label -1
+     ("extra_hop"): there is no gold entity to check them against.
   5. Record first_fail_hop = smallest hop_idx with label 1, else None.
 
 Output
@@ -51,6 +53,7 @@ from typing import Optional
 import yaml
 from tqdm import tqdm
 
+from phase1_dataset.hop_rules import apply_extra_hop_rule
 from utils.matching import EntityMatcher
 from utils.wikidata_aliases import build_alias_table, load_alias_table
 
@@ -341,12 +344,15 @@ def label_example(
     else:
         final_correct = False
 
-    return {
+    # Hops beyond the gold graph have no gold entity → unlabeled (-1), not
+    # failures.  Also recomputes first_fail_hop over labeled hops only.
+    # See phase1_dataset/hop_rules.py for why.
+    return apply_extra_hop_rule({
         **example,
         "hops":               labeled_hops,
         "first_fail_hop":     first_fail,
         "final_answer_correct": final_correct,
-    }
+    })
 
 
 # ─────────────────────────────────────────────────────────────────────────────

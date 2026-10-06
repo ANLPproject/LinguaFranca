@@ -1,134 +1,110 @@
-import json
-import torch
-import numpy as np
-import joblib
-import sys
+"""
+evaluate_saved_probe.py  (v2)
+─────────────────────────────
+Score saved probes on the canonical held-out test split.
+
+Why v2
+──────
+The v1 script evaluated the HF probes `probes/hop1_probe_layer*.joblib`.  Those
+were trained on HOP 2 (bug in v1 advanced_probing.py: `hop_idx == 1` is hop 2
+after 0-indexing).  On hop-1 data they flag ~90 % of SUCCESSES as failures, and
+v1 only printed recall on failures, so the "100 % hedging / 98.2 % confident
+wrong" table looked great.  v2 always prints recall (TPR) next to FPR and
+scores every probe on both hop-1 and hop-2 rows, so a hop mismatch is obvious.
+
+Usage
+─────
+  # probes written by advanced_probing.py v2
+  python evaluate_saved_probe.py --probes-dir outputs/probing/probes --hs-dir data/hidden_states
+  # the OLD probes on Hugging Face (to see the bug)
+  python evaluate_saved_probe.py --hf-subdir probes --legacy --hs-dir data/hidden_states
+"""
+
+from __future__ import annotations
+
+import argparse
 from pathlib import Path
-from sklearn.model_selection import GroupShuffleSplit
-from huggingface_hub import hf_hub_download
 
-def run_evaluation(labels_file, hs_dir):
-    hs_dir = Path(hs_dir)
-    print(f"[*] Loading dataset from {labels_file}...")
-    with open(labels_file, encoding='utf-8') as f:
-        examples = [json.loads(l) for l in f]
-        
-    valid_ex = [ex for ex in examples if (hs_dir / f"{ex['id']}.pt").exists()]
-    
-    # Deterministic split to match the training script exactly (random_state=42)
-    groups = [ex.get("clean_pair_id", ex["id"]) for ex in valid_ex]
-    gss = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
-    train_idx, test_idx = next(gss.split(valid_ex, groups=groups))
-    test_ex = [valid_ex[i] for i in test_idx]
-    
-    print(f"[*] Test set size: {len(test_ex)} examples")
-    
-    # HEDGING VS CONFIDENTLY WRONG ANALYSIS
-    hedging_keywords = ["no information", "no mention", "not mentioned", "no relevant information", "not found", "cannot find", "does not mention"]
-    
-    print("\n" + "="*80)
-    print("HEDGING VS CONFIDENTLY WRONG FAILURES (All Layers, Hop 1 Test Set)")
-    print("="*80)
-    print(f"{'Layer':<7} | {'Hedging Acc (%)':<20} | {'Confident Wrong Acc (%)':<25}")
-    print("-" * 80)
+import joblib
+import numpy as np
 
-    # We will do qualitative analysis ONLY on the best layer (Layer 10) to avoid spamming the screen
-    qual_results_layer10 = []
+from lf_common import (DEFAULT_DATA, HF_REPO, HIDDEN_STATES_REVISION, binary_metrics, canonical_split,
+                       fmt_metrics, hop_rows, load_examples, load_hidden, rows_arrays)
 
-    for layer_idx in range(28):
+
+def load_probe(args, task, layer):
+    """Returns (model, metadata-or-None)."""
+    if args.legacy:
+        name = f"hop1_probe_layer{layer}.joblib"      # v1 naming (actually hop-2 probes)
+    else:
+        name = f"{task}_probe_layer{layer}.joblib"
+    if args.probes_dir:
+        path = Path(args.probes_dir) / name
+    else:
+        from huggingface_hub import hf_hub_download
+        path = hf_hub_download(HF_REPO, f"{args.hf_subdir}/{name}", repo_type="dataset",
+                               revision=args.hf_revision)
+    obj = joblib.load(path)
+    if isinstance(obj, dict) and "model" in obj:
+        return obj["model"], obj
+    return obj, None
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--data", default=DEFAULT_DATA)
+    ap.add_argument("--hs-dir", default="data/hidden_states")
+    ap.add_argument("--probes-dir", default=None, help="local folder of *.joblib (else download from HF)")
+    ap.add_argument("--hf-subdir", default="probes_v2")
+    ap.add_argument("--hf-revision", default=None, help="HF revision (default: latest; legacy uses pinned)")
+    ap.add_argument("--legacy", action="store_true", help="evaluate v1 'hop1_probe_layer*.joblib' files")
+    ap.add_argument("--task", default="hop1", choices=["hop1", "hop2", "hop12"])
+    ap.add_argument("--layers", default="all")
+    args = ap.parse_args()
+    if args.legacy and args.hf_subdir == "probes_v2":
+        args.hf_subdir = "probes"
+    if args.legacy and args.hf_revision is None:
+        args.hf_revision = HIDDEN_STATES_REVISION
+
+    examples = load_examples(args.data, hs_dir=args.hs_dir)
+    _, te_idx = canonical_split(examples)
+    test_ex = [examples[i] for i in te_idx]
+    rows = hop_rows(test_ex)
+    A = rows_arrays(rows)
+    layers = list(range(28)) if args.layers == "all" else [int(x) for x in args.layers.split(",")]
+    print(f"test examples={len(test_ex)}  hop-1 rows={int((A['hop'] == 1).sum())}  hop-2 rows={int((A['hop'] == 2).sum())}")
+    print("Each probe is scored on hop-1 AND hop-2 test rows.  A real hop-1 probe should be best on hop-1 rows,")
+    print("with low FPR.  TPR without FPR is meaningless.\n")
+
+    X_all = load_hidden(test_ex, rows, args.hs_dir, layers)
+    hdr = f"{'layer':>5} | {'rows':5} | {'acc':>5} {'bacc':>5} {'auroc':>5} {'TPR':>5} {'FPR':>5} | hedge-recall conf-recall natural-recall (hop-1 failures)"
+    print(hdr); print("-" * len(hdr))
+    for L in layers:
         try:
-            probe_path = hf_hub_download(
-                repo_id="AnishRacherla/LinguaFranca-Phase3",
-                filename=f"probes/hop1_probe_layer{layer_idx}.joblib",
-                repo_type="dataset"
-            )
-            clf_h1 = joblib.load(probe_path)
+            model, meta = load_probe(args, args.task, L)
         except Exception as e:
-            print(f"Layer {layer_idx:<5} | Failed to download probe")
+            print(f"{L:>5} | probe not found ({e.__class__.__name__})")
             continue
+        if meta is not None and not args.legacy and meta.get("task") != args.task:
+            print(f"  [warn] layer {L}: file metadata says task={meta.get('task')}")
+        X = X_all[L]
+        for hop in (1, 2):
+            m = A["hop"] == hop
+            p = model.predict_proba(X[m])[:, 1]
+            r = binary_metrics(A["y"][m], p)
+            extra = ""
+            if hop == 1:
+                pred = p >= 0.5
+                f = A["y"][m] == 1
+                def rec(mm):
+                    return f"{pred[mm].mean():.3f}(n={mm.sum()})" if mm.sum() else "n/a"
+                extra = f"{rec(f & A['hedge'][m])}  {rec(f & ~A['hedge'][m])}  {rec(f & ~A['cf'][m])}"
+            print(f"{L:>5} | hop{hop}  | {r['acc']:.3f} {r['bacc']:.3f} {r.get('auroc', float('nan')):.3f} "
+                  f"{r['tpr']:.3f} {r['fpr']:.3f} | {extra}")
+    if args.legacy:
+        print("\nLegacy v1 probes: if hop-2 rows score far better than hop-1 rows and hop-1 FPR is high,")
+        print("the probe was trained on hop 2 (the v1 saving bug).")
 
-        # Extract Hop-1 hidden states for Test Set
-        X_test_hs, X_test_text, y_test = [], [], []
-        for ex in test_ex:
-            pt_path = hs_dir / f"{ex['id']}.pt"
-            data = torch.load(pt_path)
-            pooled = data['pooled']
-            
-            for hop in ex.get('hops', []):
-                h_idx = hop['hop_idx'] - 1
-                if hop.get('label') in (0, 1) and h_idx == 0 and h_idx < pooled.shape[1]:
-                    X_test_hs.append(pooled[layer_idx, h_idx].detach().numpy())
-                    X_test_text.append(hop['text'])
-                    y_test.append(hop['label'])
-                    
-                    if layer_idx == 10:
-                        vec = pooled[layer_idx, h_idx].detach().numpy()
-                        vec = np.nan_to_num(vec)
-                        prob_fail = clf_h1.predict_proba([vec])[0][1]
-                        gold_ent = hop.get("bridging_entity_gold", "")
-                        if not gold_ent:
-                            for g in ex.get("reasoning_graph", []):
-                                if g.get("hop") == hop['hop_idx']:
-                                    gold_ent = g.get("gold_entity", "")
-                                    break
-                        if not gold_ent:
-                            gold_ent = "Unknown"
-                            
-                        qual_results_layer10.append({
-                            "prob_fail": prob_fail,
-                            "true_label": hop['label'],
-                            "question": ex['question'],
-                            "gold_entity": gold_ent,
-                            "generated_text": hop['text'],
-                            "is_cf": ex.get('is_counterfactual', False)
-                        })
-                    
-        X_test_hs = np.array(X_test_hs)
-        y_test = np.array(y_test)
-        X_test_text = np.array(X_test_text)
-        
-        fail_mask = y_test == 1
-        X_fail_text = X_test_text[fail_mask]
-        X_fail_hs = X_test_hs[fail_mask]
-        y_fail = y_test[fail_mask]
-        
-        y_fail_pred = clf_h1.predict(X_fail_hs)
-        is_hedging = np.array([any(k in t.lower() for k in hedging_keywords) for t in X_fail_text])
-        
-        hedge_acc = np.mean(y_fail_pred[is_hedging] == y_fail[is_hedging]) if np.sum(is_hedging) > 0 else 0
-        wrong_acc = np.mean(y_fail_pred[~is_hedging] == y_fail[~is_hedging]) if np.sum(~is_hedging) > 0 else 0
-        
-        print(f"Layer {layer_idx:<5} | {hedge_acc*100:<18.1f} | {wrong_acc*100:<23.1f}")
-    
-    # QUALITATIVE ERROR ANALYSIS (Layer 10)
-    print("\n" + "="*80)
-    print("QUALITATIVE PROBE ANALYSIS (Layer 10)")
-    print("="*80)
-    
-    qual_results_layer10.sort(key=lambda x: x["prob_fail"], reverse=True)
-    
-    cf_failures = [r for r in qual_results_layer10 if r["is_cf"]][:5]
-    natural_failures = [r for r in qual_results_layer10 if not r["is_cf"]][:5]
-    
-    print("\n--- TOP 5 COUNTERFACTUAL FAILURES ---")
-    for i, res in enumerate(cf_failures):
-        print(f"\nSample {i+1}")
-        print(f"Question:       {res['question']}")
-        print(f"Gold Entity:    {res['gold_entity']}")
-        print(f"Generated Hop:  {res['generated_text']}")
-        print(f"True Label:     {'1 (Hallucination)' if res['true_label'] == 1 else '0 (Success)'}")
-        print(f"Probe Predicts: {res['prob_fail']*100:.1f}% chance of Failure")
-
-    print("\n\n--- TOP 5 NATURAL FAILURES (No Swapped Entities) ---")
-    for i, res in enumerate(natural_failures):
-        print(f"\nSample {i+1}")
-        print(f"Question:       {res['question']}")
-        print(f"Gold Entity:    {res['gold_entity']}")
-        print(f"Generated Hop:  {res['generated_text']}")
-        print(f"True Label:     {'1 (Hallucination)' if res['true_label'] == 1 else '0 (Success)'}")
-        print(f"Probe Predicts: {res['prob_fail']*100:.1f}% chance of Failure")
 
 if __name__ == "__main__":
-    labels_file = sys.argv[1] if len(sys.argv) > 1 else "/kaggle/input/2wikimultihopqa-phase2-labels/labeled_dataset.jsonl"
-    hs_dir = sys.argv[2] if len(sys.argv) > 2 else "/kaggle/input/linguafranca-hidden-states/hidden_states"
-    run_evaluation(labels_file, hs_dir)
+    main()
