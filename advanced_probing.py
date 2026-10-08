@@ -272,7 +272,7 @@ def run_advanced_probing_all_layers(labels_file, hs_dir):
     print("\n[+] Saving trained Hop-1 probes for all layers to disk...")
     for li in layer_indices:
         X_tr, _, y_tr, _, hop_idx_tr, _ = extract_data(train_ex, hs_dir, layer_idx=li)
-        h1_mask_tr = hop_idx_tr == 1
+        h1_mask_tr = hop_idx_tr == 0   # extract_data stores hop_idx - 1, so hop 1 == 0
         X_tr_h1 = X_tr[h1_mask_tr]
         y_tr_h1 = y_tr[h1_mask_tr]
         
@@ -281,6 +281,9 @@ def run_advanced_probing_all_layers(labels_file, hs_dir):
             clf_li.fit(X_tr_h1, y_tr_h1)
             probe_save_path = hs_dir.parent / f"hop1_probe_layer{li}.joblib"
             joblib.dump(clf_li, probe_save_path)
+    
+    import json
+    json.dump([ex["id"] for ex in train_ex], open(hs_dir.parent / "probe_train_ids.json", "w"))
     print(f"[+] Saved {len(layer_indices)} layer probes to {hs_dir.parent}")
 
     # QUALITATIVE ERROR ANALYSIS
