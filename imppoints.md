@@ -5,7 +5,7 @@
 > scripts on the canonical dataset (`data/canonical/augmented_v2.jsonl`, 4,078 examples:
 > 4,000 natural + 78 counterfactual) and the canonical grouped 80/20 split
 > (3,264 train / 814 test examples). Probing numbers: `outputs/probing/results.md`.
-> Section 7 (patching) is PENDING the final v4 run (`kaggle/03`).
+> All sections are now filled in from real runs.
 
 ## 1. Data generation & labeling (Phase 1)
 * **Strict XML chain-of-thought.** Llama-3.2-3B-Instruct wraps each step in `<hop1>…</hop1>`, `<hop2>…</hop2>`. This gives exact token boundaries for pooling per hop.
@@ -82,16 +82,28 @@ Source: `kaggle/02_llm_judge.ipynb` (Oct 2026). 1,617 held-out rows (hops 1–2 
 * Caveat on interpretation: the judge is never told the gold bridge entity (neither is the probe). The label is "did the hop name the gold bridge entity", which a grounding judge can only partly infer. This is the fair "text-only diagnoser" comparison the proposal asks for, but it is a weaker test than a fine-tuned diagnoser such as Doctor-RAG's.
 * The earlier Llama-3B-judge figures (61.7 % accuracy, 18.4 % confident-failure recall) turn out to be consistent with this re-run (0.184 recall); what was wrong before was the probe side and the comparison setup, not the judge itself.
 
-## 7. Causal patching (Phase 4) — final run (v4) PENDING
-* **Earlier runs, what survives:**
-  * v1 notebook: void (sampled instead of greedy; patched into prompts that already said "not mentioned").
-  * v2.0 run (Oct 2026): hook self-test and all-positions sanity passed. But its "entity-span" column is **invalid**: the Llama chat template contains today's date, the clean and CF prompts were generated on different days, and v2.0 treated everything from that date token to the entity (~1,000 tokens) as "the entity". Its last-token column (≈0 % at every layer) and Experiment B (0/51 restored at blocks 8/11/14/20, 95 % CI 0–7 %) were not affected.
-* **v4 (final, `kaggle/03_causal_patching.ipynb`)** makes the pairs true minimal pairs: the CF prompt's date token is set to the clean one (verified on the real tokenizer: 51/51 pairs then differ only in the entity, 2–11 tokens). It measures:
-  * **A:** restoration of the hop-1 bridge entity when patching the entity tokens, the tail tokens or the last token, by block, plus a donor-entity control and a sanity check;
-  * **B:** the `</hop1>` transplant;
-  * **C:** whether the hop-1 probe's verdict flips when the patch restores the entity. This links Phase 4 to the probe; a self-check verifies that recomputed Phase-1 states match the stored ones.
-* Fill in from `results/patching/summary.md`.
-* Data note: in 7 of the 78 CF records, `hops[0].text` comes from a different decoding than `generated_cot` (both are "not mentioned" hedges; labels identical). The hidden states and all Phase-4 inputs use `generated_cot`, so nothing is affected.
+## 7. Causal patching (Phase 4) — final run (v4, Kaggle, Llama-3.2-3B, 51 token-aligned pairs)
+Source: `kaggle/03_causal_patching.ipynb`, results in `outputs/patching/`. All checks passed (hook self-test, all-positions sanity = 51/51 restored, probe-link self-check cosine = 1.0, 0 errors). The clean and counterfactual (CF) prompts differ only in the swapped entity (median 5 tokens, 2–11); the CF run never states the right entity (0/51) and hedges ("not mentioned") in 86 % of pairs. Earlier patching results (v1 notebook, v2.0 run) are void.
+
+**Experiment A — copy the clean run's internal state into the CF run at block L; does hop 1 now name the correct bridge entity?** (n = 51; success = gold entity appears in the generated hop 1)
+
+| block | entity tokens | tail (tokens after the entity) | last prompt token only | donor-entity control |
+|---|---|---|---|---|
+| 0 | 1.00 | 0.02 | 0.00 | 0.18 |
+| 4 | 1.00 | 0.16 | 0.00 | 0.61 |
+| 8 | 1.00 | 0.45 | 0.00 | 0.43 |
+| 10 | 0.90 | 0.63 | 0.00 | 0.43 |
+| 11 | 0.76 | 0.73 | 0.00 | 0.39 |
+| 13 | 0.69 | 0.65 | 0.04 | 0.37 |
+| 14 | 0.39 | 0.12 | 0.04 | 0.29 |
+| 20 | 0.35 | 0.06 | 0.04 | 0.27 |
+| 24 | 0.08 | 0.04 | 0.00 | 0.06 |
+
+* **Where the entity information lives:** through block ~8 it sits entirely in the entity tokens (100 % restored). Over blocks ~8–13 it is read out into the tokens that follow (tail restoration rises 0.45 → 0.73 while entity-token restoration falls 1.00 → 0.69). By block 14 neither alone is sufficient (0.39 / 0.12), and the single last prompt token never is (≤ 4 %). At blocks 9–13, patching the entity tokens or the tail restores 84–98 % of pairs. This transition window (blocks ~9–14) coincides with the blocks where the hop-1 probe is strongest (§2), which is suggestive but not proof.
+* **The donor control is NOT zero.** Overwriting the entity tokens with a *different* entity's states restores the gold entity in 18–61 % of runs. Most likely, once the question's entity is perturbed to something the model does not recognise it falls back to the only entity in the context (hypothesis, not tested). So the honest effect of "restoring the clean entity" is the paired difference to the donor: significantly positive at blocks 0–13 (exact sign test, every p ≤ 0.0005; +0.27 to +0.82), **but not significant at blocks 14, 16, 20, 24** (+0.02 to +0.10, p ≥ 0.06). Do not claim entity-specific restoration beyond block 13.
+* **Experiment B — a single state at `</hop1>`:** restores 0/51 at blocks 8, 11, 14, 20 (95 % CI 0–7 %; baseline correct 1/51). Fixing the one hop-boundary vector does not fix the outcome.
+* **Experiment C — does the hop-1 probe follow the intervention?** The probe flags 0/51 clean runs and 51/51 CF runs. When an entity patch restores the entity it flags ≤ 5 % of those runs (0 % at blocks 0–10); when it does not it flags 77–100 %. Overall its verdict matches "entity restored?" in 691/714 patched runs (96.8 %). Caveat: the probe reads the states of the generated hop-1 *text*, so a large part of this agreement is expected; it shows the probe tracks the outcome rather than superficial properties of the prompt (the prompt is the same CF prompt in every run).
+* **Limits (state these in the paper):** one model; 51 pairs, all from the counterfactual "entity not in context" type; success is a substring match on the generated hop; the patches restore the *input-side* representation of the entity, not the probed hop-boundary state itself (the latter is Experiment B, which is null). So Phase 4 shows *where the information the hop depends on is processed and that the probe's verdict follows it*; it does not show that the probed hop-1 state alone causes the failure.
 
 ## 8. Phase 5 (next) — which probe to use
 Use `outputs/probing/probes/hop1_probe_layer10.joblib` (a dict: `["model"]` is the sklearn pipeline). Its input is the mean of the hop-1 token states at block 10, matching `generate_cot.extract_hidden_states`. Pick the alarm threshold on validation data for the false-alarm budget you want: at 0.5 it catches ~75 % of hop-1 failures with ~3 % false alarms.

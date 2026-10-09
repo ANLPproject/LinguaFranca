@@ -10,7 +10,7 @@
 | Labels (extra-hop fix), canonical dataset | done |
 | Probing (Phase 2–3) | done; numbers in `imppoints.md` §2–5 (run locally, reproducible with `kaggle/01`, optional) |
 | LLM-judge baseline (`kaggle/02`) | **done, valid** (probe AUROC 0.958 vs best judge 0.718); `imppoints.md` §6 |
-| Causal patching (`kaggle/03`) | **run the final v4 once more** — the previous run had a bug in my entity-span definition (see §2 item 4b) |
+| Causal patching (`kaggle/03`) | **done, valid (v4)** — see `imppoints.md` §7 (the earlier run had a bug in my entity-span definition, §2 item 4b) |
 
 
 This file explains what was wrong in Phases 1–4, what was changed, which results change, and exactly what to run.
