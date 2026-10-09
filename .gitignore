@@ -7,3 +7,4 @@ data/
 kaggle_upload/
 outputs/*/probes/
 outputs/probing/test_predictions.csv
+*_results.zip

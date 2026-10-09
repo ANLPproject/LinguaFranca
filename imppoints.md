@@ -5,7 +5,7 @@
 > scripts on the canonical dataset (`data/canonical/augmented_v2.jsonl`, 4,078 examples:
 > 4,000 natural + 78 counterfactual) and the canonical grouped 80/20 split
 > (3,264 train / 814 test examples). Probing numbers: `outputs/probing/results.md`.
-> Sections marked **PENDING** need the Kaggle GPU notebooks (`kaggle/02`, `kaggle/03`).
+> Section 7 (patching) is PENDING the final v4 run (`kaggle/03`).
 
 ## 1. Data generation & labeling (Phase 1)
 * **Strict XML chain-of-thought.** Llama-3.2-3B-Instruct wraps each step in `<hop1>…</hop1>`, `<hop2>…</hop2>`. This gives exact token boundaries for pooling per hop.
@@ -65,14 +65,33 @@ See `outputs/probing/qualitative_hop1.md`. The probe's most confident natural fa
 ## 5. Internal failures → external failures
 The hop-1 probe score predicts a wrong *final* answer only weakly (test AUROC 0.59; the gold hop-1 label itself: 0.56), because many hop-1 "failures" are detours the model recovers from. Hop-level detection works well. The link from hop failure to final-answer failure is weak in this setup and should be stated as such.
 
-## 6. LLM-as-judge baseline — **PENDING** (`kaggle/02_llm_judge.ipynb`)
-* The previous figures (61.7 % accuracy; 5.9 % hedging and 18.4 % confident-failure recall) are **void**. The judge was scored on all generated hops, including the extra hops that were "failure" by construction, on a different data file and split than the probe, and the probe's 98.2 % comparison number was itself invalid.
-* v2 scores four judges (Llama-3.2-3B, Qwen2.5-3B, Qwen2.5-7B, Llama-3.1-8B) on the **identical 1,628 test rows** as the probe, with AUROC from P(no)/P(yes). Fill in from `outputs/llm_judge/summary.md`.
-* Reading guide: for counterfactual rows the hop text is usually a *true* statement ("X is not mentioned"), so a grounding judge saying "yes" is not wrong about grounding. Compare on natural rows.
+## 6. LLM-as-judge baseline (Phase 3) — measured on identical rows
+Source: `kaggle/02_llm_judge.ipynb` (Oct 2026). 1,617 held-out rows (hops 1–2 of the canonical test split; 11 hops with empty text dropped); the probe is scored on exactly the same rows. The judge sees the context, the question and the hop text and is asked whether the step is correct and grounded; P(failure) = P("no") vs P("yes") from one forward pass (no sampling). Llama models ran through ungated mirrors of the same weights (`unsloth/...`).
 
-## 7. Causal patching (Phase 4) — **PENDING** (`kaggle/03_causal_patching.ipynb`)
-* The earlier notebook's results are void: it sampled (no `do_sample=False`, Llama samples at T = 0.6 by default) and patched into counterfactual prompts whose hop-1 text already said "not mentioned". The "0 % prompt-end" figure came from an earlier (greedy) version and was never logged.
-* v2: classic causal tracing on token-aligned (clean, CF) pairs. It restores the clean residual stream at the entity tokens or at the last prompt token, layer by layer, with a donor-entity control and a hook self-test. Fill in from `outputs/patching/summary.md`.
+| detector | AUROC | bal. acc | TPR (failure recall) | FPR | hop-1 AUROC |
+|---|---|---|---|---|---|
+| **Probe** (hop-specific, layers 10/13) | **0.958** | **0.900** | 0.853 | 0.053 | **0.955** |
+| Qwen2.5-7B judge | 0.718 | 0.656 | 0.627 | 0.314 | 0.709 |
+| Llama-3.2-3B judge | 0.606 | 0.546 | 0.175 | 0.083 | 0.674 |
+| Llama-3.1-8B judge | 0.604 | 0.531 | 0.129 | 0.067 | 0.597 |
+| Qwen2.5-3B judge | 0.597 | 0.552 | 0.794 | 0.690 | 0.613 |
+
+* The probe is far ahead of every judge (AUROC 0.96 vs ≤ 0.72). Judge size does not fix it: the 8B Llama is no better than the 3B.
+* Two judges are miscalibrated rather than informative: Qwen-3B answers "no" for 72 % of rows (its 79 % "recall" comes with a 69 % false-alarm rate), and both Llamas answer "yes" for ~90 % of rows (recall 13–18 %). AUROC is the fair, threshold-free comparison; even at the best threshold their balanced accuracy is 0.57–0.66.
+* Failure recall on confident failures (n = 365): probe 0.85, Qwen-7B 0.66, Llama-3B 0.18, Llama-8B 0.13. Hedging failures (n = 24, all counterfactuals): probe 0.96, Llama judges 0.04 — they correctly call "X is not mentioned" a grounded statement, which our label calls a failure, so the CF rows (n = 24) are noisy and should not be over-read.
+* Caveat on interpretation: the judge is never told the gold bridge entity (neither is the probe). The label is "did the hop name the gold bridge entity", which a grounding judge can only partly infer. This is the fair "text-only diagnoser" comparison the proposal asks for, but it is a weaker test than a fine-tuned diagnoser such as Doctor-RAG's.
+* The earlier Llama-3B-judge figures (61.7 % accuracy, 18.4 % confident-failure recall) turn out to be consistent with this re-run (0.184 recall); what was wrong before was the probe side and the comparison setup, not the judge itself.
+
+## 7. Causal patching (Phase 4) — final run (v4) PENDING
+* **Earlier runs, what survives:**
+  * v1 notebook: void (sampled instead of greedy; patched into prompts that already said "not mentioned").
+  * v2.0 run (Oct 2026): hook self-test and all-positions sanity passed. But its "entity-span" column is **invalid**: the Llama chat template contains today's date, the clean and CF prompts were generated on different days, and v2.0 treated everything from that date token to the entity (~1,000 tokens) as "the entity". Its last-token column (≈0 % at every layer) and Experiment B (0/51 restored at blocks 8/11/14/20, 95 % CI 0–7 %) were not affected.
+* **v4 (final, `kaggle/03_causal_patching.ipynb`)** makes the pairs true minimal pairs: the CF prompt's date token is set to the clean one (verified on the real tokenizer: 51/51 pairs then differ only in the entity, 2–11 tokens). It measures:
+  * **A:** restoration of the hop-1 bridge entity when patching the entity tokens, the tail tokens or the last token, by block, plus a donor-entity control and a sanity check;
+  * **B:** the `</hop1>` transplant;
+  * **C:** whether the hop-1 probe's verdict flips when the patch restores the entity. This links Phase 4 to the probe; a self-check verifies that recomputed Phase-1 states match the stored ones.
+* Fill in from `results/patching/summary.md`.
+* Data note: in 7 of the 78 CF records, `hops[0].text` comes from a different decoding than `generated_cot` (both are "not mentioned" hedges; labels identical). The hidden states and all Phase-4 inputs use `generated_cot`, so nothing is affected.
 
 ## 8. Phase 5 (next) — which probe to use
 Use `outputs/probing/probes/hop1_probe_layer10.joblib` (a dict: `["model"]` is the sklearn pipeline). Its input is the mean of the hop-1 token states at block 10, matching `generate_cot.extract_hidden_states`. Pick the alarm threshold on validation data for the false-alarm budget you want: at 0.5 it catches ~75 % of hop-1 failures with ~3 % false alarms.

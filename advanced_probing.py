@@ -210,6 +210,8 @@ def main():
                   f"| hop2 TEST auroc={lr['hop2']['test']['all'].get('auroc', np.nan):.3f} "
                   f"| hop12 TEST natural auroc={lr['hop12']['test']['natural'].get('auroc', np.nan):.3f}", flush=True)
         del X
+        with open(out / "results_partial.json", "w") as f:        # safety net if a later step fails
+            json.dump(results, f, indent=1, default=lambda o: o.item() if hasattr(o, "item") else str(o))
 
     # ── layer selection (train-CV only) + final held-out report ───────────────
     def best_layer(task):

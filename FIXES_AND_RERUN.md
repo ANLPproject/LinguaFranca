@@ -1,5 +1,18 @@
 # Fixes & re-run guide (Oct 2026)
 
+---
+
+## 0. Current status (read this first)
+
+| what | status |
+|---|---|
+| Phase 1 data + hidden states | fine, no rerun |
+| Labels (extra-hop fix), canonical dataset | done |
+| Probing (Phase 2–3) | done; numbers in `imppoints.md` §2–5 (run locally, reproducible with `kaggle/01`, optional) |
+| LLM-judge baseline (`kaggle/02`) | **done, valid** (probe AUROC 0.958 vs best judge 0.718); `imppoints.md` §6 |
+| Causal patching (`kaggle/03`) | **run the final v4 once more** — the previous run had a bug in my entity-span definition (see §2 item 4b) |
+
+
 This file explains what was wrong in Phases 1–4, what was changed, which results change, and exactly what to run.
 
 **Short version:** Phase 1 generation (CoT + hidden states) does **not** need to be re-run. One labeling rule was wrong; it is fixed by a cheap post-processing step that is already done. Probing (Phase 2–3) has already been re-run with the fixed code (numbers are in `imppoints.md`). You need to run **two GPU notebooks on Kaggle**: the LLM-judge baseline (~1 h) and the causal patching (~1 h). The probing notebook is optional (to reproduce my numbers on Kaggle, ~1 h CPU).
@@ -34,6 +47,7 @@ Only if you later want a *bigger* dataset (more questions or a new counterfactua
 2. **Saved "hop1" probes were hop-2 probes.** v1 `advanced_probing.py` saved probes with `hop_idx == 1`, which is hop 2 after 0-indexing (confirmed: 100 % train accuracy on hop 2, 18–40 % on hop 1). `evaluate_saved_probe.py` v1 scored them on hop 1 and printed only recall, which produced the "100 % hedging / 98.2 % confident-wrong" table. Those probes flag **89 % of hop-1 successes** as failures (layer 11). The correct figure is ~75 % recall at ~2–3 % false alarms. **Fix:** v2 `advanced_probing.py` saves `hop1_/hop2_/hop12_probe_layer{L}.joblib` with metadata; v2 `evaluate_saved_probe.py` always prints FPR and scores both hops.
 3. **Probe and LLM judge were compared on different data.** On 2026-09-30 `kaggle_relabel.ipynb` overwrote the HF data files with a new set of 115 counterfactuals whose hidden states were never uploaded (9 of 115 have `.pt` files). The probe numbers came from the earlier file (78 CFs), the judge from the later one, and each script made its own split. The judge also judged the fake-failure extra hops. **Fix:** one canonical file pinned to the pre-overwrite revision (`data/canonical/augmented_v2.jsonl`), and one split function used by every script (`lf_common.py`).
 4. **Phase 4 notebook.** `model.generate()` was called without `do_sample=False`, and Llama-3.2-Instruct samples by default (T = 0.6), so baseline and patched answers differed by chance. The markdown described the opposite experiment. ~90 % of CF prompts already contained "X is not mentioned" in hop 1, so "restore the clean answer" had no valid target. No result was ever recorded. **Fix:** new `causal_patching.py`: greedy decoding, causal tracing on token-aligned pairs, controls, and a hook self-test. While building it I also found that HF's last `output_hidden_states` entry is *after* the final norm, so states are now captured with block hooks.
+4b. **My own bug in the first `causal_patching.py` run (fixed in v4).** The Llama chat template inserts today's date, and the clean and counterfactual prompts were generated on different days, so they also differ at one date token near the start. v2.0 took "first to last differing token" as the entity span (~1,000 tokens), so its entity-span results are invalid (its last-token column and Experiment B are unaffected). v4 sets the CF's date token to the clean one (true minimal pairs; verified on all 51 pairs), uses only the 2–11 entity tokens, adds a tail condition, a length-matched donor control and a direct probe link (Experiment C), and refuses to run if the spans look wrong.
 
 ### Medium (code bugs that crashed or mis-stated things)
 5. Two `NameError`s in v1 `advanced_probing.py` (`X_test_text`, `X_test_h1`). The script crashed before the probe-saving block, so the HF probes came from an older run.
@@ -103,7 +117,7 @@ In any notebook: **Add-ons → Secrets → Add a new secret**, label `HF_TOKEN`,
 4. When done, download `llm_judge_results.zip` from the **Output** section. Send me / paste `summary.md`.
    * If a Llama model fails with a 401/403, the token's account has not accepted that model's licence. The script skips that model and continues.
 
-### Step 4 — run `kaggle/03_causal_patching.ipynb` (GPU, ~1–1.5 h)
+### Step 4 — run `kaggle/03_causal_patching.ipynb` (GPU, ~2.3 h; use the NEW bundle)
 Same steps as Step 3 (GPU T4 x1 is enough). First check that the log prints `HOOK SELF-TEST: … PASS`. Download `patching_results.zip` → `summary.md`.
 
 ### Step 5 (optional) — run `kaggle/01_probing.ipynb` (CPU, ~1 h)

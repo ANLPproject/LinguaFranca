@@ -17,12 +17,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 FILES = [
-    "lf_common.py", "lf_models.py",
+    "lf_common.py", "lf_models.py", "kaggle_helpers.py",
     "advanced_probing.py", "evaluate_saved_probe.py", "bootstrap_confident_wrong.py",
     "evaluate_llm_baseline.py", "causal_patching.py",
     "scripts/make_canonical_dataset.py",
     "phase1_dataset/__init__.py", "phase1_dataset/hop_rules.py",
     "data/canonical/augmented_v2.jsonl", "data/canonical/augmented_v2.stats.json",
+    "data/canonical/hop1_probe_layer10.npz", "data/canonical/phase4_reference_hop1_L10.npz",
 ]
 OPTIONAL_DIRS = ["outputs/probing"]
 
