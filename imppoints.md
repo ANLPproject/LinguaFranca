@@ -87,3 +87,15 @@ When broken down by failure type, the un-finetuned LLM Judge completely collapse
 * The **Doctor-RAG** paper proposes a post-hoc "Diagnose-and-Repair" framework using an LLM to evaluate failed reasoning trajectories. To achieve an 81.3% diagnosis accuracy, they had to rely on a computationally expensive *distilled and fine-tuned* diagnosis LLM.
 * As our 61.7% LLM Baseline shows, off-the-shelf models are terrible at post-hoc text-based diagnosis.
 * **The Narrative Pivot:** Our project demonstrates that instead of waiting for a trajectory to fail and spending heavy compute to fine-tune an LLM just to diagnose the text, we can use a **Linear Probe** to read the model's subconscious hidden states during generation. Our probe achieves **91%+ accuracy** instantly, allowing for an "Early Warning System" that triggers a fix *before* the trajectory fails, rendering heavy post-hoc LLM analysis unnecessary.
+
+
+things to add ...
+
+i think there are many things which we need to add to the report .
+1) dataimabalaces numbers 
+2) abot counterfactuals how we generated them and why they are needed and all
+3) comparing differnt metrics of mlp logistic regression and svm
+4) doctor rag baseline on finetuned model (80percent accuracy)
+5) how much less infernce and all compared to doctor rag 
+6) adding the internal doubt to timeline.
+7) our probe accuracy on hedgin and confident failures 
