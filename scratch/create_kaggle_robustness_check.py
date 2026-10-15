@@ -1,0 +1,145 @@
+import json
+
+cells = [
+    {
+        "cell_type": "markdown",
+        "metadata": {},
+        "source": [
+            "# Cell 9: Probe Robustness Check\n",
+            "This notebook tests if the Layer 13 causal result is stable across different probe training runs (bootstrapping and regularization). \n",
+            "**Requirements:** Attach your `features` dataset (the unzipped `probe_features.npz` files) to this notebook before running."
+        ]
+    },
+    {
+        "cell_type": "code",
+        "execution_count": None,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+            "!pip install -q huggingface_hub scikit-learn numpy torch"
+        ]
+    },
+    {
+        "cell_type": "code",
+        "execution_count": None,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+            "from huggingface_hub import snapshot_download\n",
+            "from pathlib import Path\n",
+            "\n",
+            "print('Downloading hidden states from HuggingFace (this may take a few minutes)...')\n",
+            "hs_local = Path(snapshot_download('AnishRacherla/LinguaFranca-Phase3', repo_type='dataset', allow_patterns='data/hidden_states/*'))\n",
+            "HS_DIR = hs_local / 'data' / 'hidden_states'\n",
+            "print(f'Hidden states ready at {HS_DIR}')"
+        ]
+    },
+    {
+        "cell_type": "code",
+        "execution_count": None,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+            "import json\n",
+            "import os\n",
+            "import numpy as np\n",
+            "import torch\n",
+            "from sklearn.pipeline import make_pipeline\n",
+            "from sklearn.preprocessing import StandardScaler\n",
+            "from sklearn.linear_model import LogisticRegression\n",
+            "from huggingface_hub import hf_hub_download\n",
+            "\n",
+            "# Find the unzipped numpy arrays in Kaggle\n",
+            "FEATURES_DIR = None\n",
+            "for root, dirs, files in os.walk('/kaggle/input'):\n",
+            "    if 'ids.npy' in files and 'F_clean.npy' in files:\n",
+            "        FEATURES_DIR = root\n",
+            "        break\n",
+            "if not FEATURES_DIR:\n",
+            "    raise FileNotFoundError(\"Could not find the unzipped .npy files in /kaggle/input/.\")\n",
+            "\n",
+            "def load_npy(name):\n",
+            "    return np.load(os.path.join(FEATURES_DIR, name + '.npy'), allow_pickle=True)\n",
+            "\n",
+            "REPO = \"AnishRacherla/LinguaFranca-Phase3\"\n",
+            "LAYERS = [9, 10, 11, 12, 13]\n",
+            "N_BOOT = 5                     # bootstrap resamples at the default C\n",
+            "C_VALUES = [1.0, 0.1, 0.01]    # regularisation strengths\n",
+            "\n",
+            "labels_file = hf_hub_download(REPO, \"data/2wikimultihopqa/augmented.jsonl\", repo_type=\"dataset\")\n",
+            "train_ids = set(map(str, json.load(open(hf_hub_download(REPO, \"probes/probe_train_ids.json\", repo_type=\"dataset\")))))\n",
+            "examples = [json.loads(l) for l in open(labels_file)]\n",
+            "\n",
+            "X = {L: [] for L in LAYERS}; y, groups = [], []\n",
+            "for ex in examples:\n",
+            "    if str(ex[\"id\"]) not in train_ids:\n",
+            "        continue\n",
+            "    p = HS_DIR / f\"{ex['id']}.pt\"\n",
+            "    if not p.exists():\n",
+            "        continue\n",
+            "    pooled = torch.load(p, map_location=\"cpu\", weights_only=False)[\"pooled\"]\n",
+            "    for hop in ex.get(\"hops\", []):\n",
+            "        if hop[\"hop_idx\"] == 1 and hop.get(\"label\") in (0, 1) and pooled.shape[1] > 0:\n",
+            "            for L in LAYERS:\n",
+            "                X[L].append(pooled[L, 0].float().numpy())\n",
+            "            y.append(hop[\"label\"]); groups.append(str(ex.get(\"clean_pair_id\", ex[\"id\"])))\n",
+            "y = np.array(y); groups = np.array(groups)\n",
+            "X = {L: np.nan_to_num(np.stack(v)) for L, v in X.items()}\n",
+            "print(f\"Hop-1 training set: {len(y)} hops, failure rate {y.mean():.3f}\")\n",
+            "\n",
+            "FL = list(load_npy('feature_layers'))\n",
+            "ids = load_npy('ids').astype(str)\n",
+            "held = np.array([i not in train_ids for i in ids])\n",
+            "\n",
+            "F_clean = load_npy('F_clean')\n",
+            "F_cf = load_npy('F_cf')\n",
+            "F_entity = load_npy('F_entity')\n",
+            "\n",
+            "def fit(L, C, idx):\n",
+            "    clf = make_pipeline(StandardScaler(), LogisticRegression(C=C, max_iter=2000, class_weight=\"balanced\", random_state=0))\n",
+            "    return clf.fit(X[L][idx], y[idx])\n",
+            "\n",
+            "def evaluate(clf, L):\n",
+            "    k = FL.index(L)\n",
+            "    s = lambda A: clf.decision_function(np.nan_to_num(A.reshape(-1, A.shape[-1]).astype(np.float64))).reshape(A.shape[:-1])\n",
+            "    cl, co, ent = s(F_clean[:, k]), s(F_cf[:, k]), s(F_entity[:, :, k])\n",
+            "    d = co - cl\n",
+            "    frac = ((co[:, None] - ent[:, :L]).mean(0) / (co - cl).mean()).max()\n",
+            "    return d.mean(), d[held].mean(), (d > 0).mean(), frac\n",
+            "\n",
+            "rng = np.random.default_rng(0)\n",
+            "uniq = np.unique(groups)\n",
+            "print(f\"\\n{'L':>3} | {'variant':<14} | TestA all | TestA held | %rise | best restore frac\")\n",
+            "summary = {}\n",
+            "for L in LAYERS:\n",
+            "    res = []\n",
+            "    for C in C_VALUES:\n",
+            "        res.append((f\"C={C}\", *evaluate(fit(L, C, np.arange(len(y))), L)))\n",
+            "    for b in range(N_BOOT):\n",
+            "        g = rng.choice(uniq, len(uniq), replace=True)\n",
+            "        idx = np.concatenate([np.where(groups == gi)[0] for gi in g])\n",
+            "        res.append((f\"boot {b}\", *evaluate(fit(L, 1.0, idx), L)))\n",
+            "    for name, a, h, pr, fr in res:\n",
+            "        print(f\"{L:>3} | {name:<14} | {a:+9.2f} | {h:+10.2f} | {pr*100:4.0f}% | {fr:+.2f}\")\n",
+            "    signs = np.sign([r[1] for r in res])\n",
+            "    verdict = (\"STABLE POSITIVE (passes)\" if (signs > 0).all() else\n",
+            "               \"STABLE NEGATIVE (fails)\" if (signs < 0).all() else \"UNSTABLE - depends on the probe, don't claim\")\n",
+            "    summary[L] = verdict\n",
+            "    print(f\"    -> layer {L}: Test A sign across {len(res)} retrainings: {verdict}\\n\")\n",
+            "\n",
+            "print(\"SUMMARY:\", json.dumps(summary, indent=1))\n"
+        ]
+    }
+]
+
+nb = {
+    "nbformat": 4,
+    "nbformat_minor": 4,
+    "metadata": {},
+    "cells": cells
+}
+
+with open("create_kaggle_robustness_check.ipynb", "w") as f:
+    json.dump(nb, f, indent=1)
+
+print("Created create_kaggle_robustness_check.ipynb")
