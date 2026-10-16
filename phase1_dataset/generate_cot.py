@@ -433,10 +433,15 @@ def run_generation(cfg: dict, dry_run: bool = False) -> Path:
         else:
             context_list = ctx_obj
             
-        # Filter context to only gold supporting-fact passages.
-        # We now correctly handle the HF columnar dict format, so this works.
-        # Fallback to first 4 paragraphs if gold_titles is empty (malformed record).
-        gold_context = ""
+        # ── Context assembly ──────────────────────────────────────────────────
+        # use_distractor_context=True  → include ALL 10 passages (2 gold + 8
+        #   distractors), exactly as a real RAG retriever would return them.
+        #   This is the correct setting for the RAG intervention pipeline.
+        # use_distractor_context=False → legacy mode: gold passages only
+        #   (useful only for ablations / sanity checks).
+        use_distractor = cfg.get("data", {}).get("use_distractor_context", True)
+
+        full_context = ""
         matched_titles = set()
         for ctx in context_list:
             if isinstance(ctx, (list, tuple)):
@@ -448,16 +453,24 @@ def run_generation(cfg: dict, dry_run: bool = False) -> Path:
             else:
                 continue
 
-            if gold_titles and t not in gold_titles:
-                continue   # skip distractor passages
+            # In gold-only mode, skip passages not in supporting_facts
+            if not use_distractor and gold_titles and t not in gold_titles:
+                continue
 
             if isinstance(sents, (list, tuple)):
                 sents = " ".join(str(s) for s in sents)
-            gold_context += f"Title: {t}\n{sents}\n\n"
-            matched_titles.add(t)
 
-        # Fallback: if gold_titles filtering gave nothing (empty record), use first 4
-        if not gold_context.strip():
+            # Mark gold passages with [GOLD] prefix so the model (and our
+            # analysis scripts) can optionally identify them, but the model
+            # still has to read through all passages to find the right one.
+            if t in gold_titles:
+                full_context += f"Title: {t}\n{sents}\n\n"
+                matched_titles.add(t)
+            else:
+                full_context += f"Title: {t}\n{sents}\n\n"
+
+        # Fallback: if nothing was collected (malformed record), use first 4
+        if not full_context.strip():
             for ctx in context_list[:4]:
                 if isinstance(ctx, (list, tuple)):
                     t = ctx[0] if ctx else ""
@@ -469,16 +482,19 @@ def run_generation(cfg: dict, dry_run: bool = False) -> Path:
                     continue
                 if isinstance(sents, (list, tuple)):
                     sents = " ".join(str(s) for s in sents)
-                gold_context += f"Title: {t}\n{sents}\n\n"
+                full_context += f"Title: {t}\n{sents}\n\n"
 
         return {
-            "id":             rec.get("_id") or rec.get("id") or rec.get("qid") or f"unknown_{uuid.uuid4().hex[:8]}",
-            "source":         "2wikimultihopqa",
-            "question":       rec["question"],
-            "context":        gold_context.strip(),
-            "gold_answer":    rec["answer"],
+            "id":              rec.get("_id") or rec.get("id") or rec.get("qid") or f"unknown_{uuid.uuid4().hex[:8]}",
+            "source":          "2wikimultihopqa",
+            "question":        rec["question"],
+            "context":         full_context.strip(),
+            # Store gold passage titles so probe/labelling scripts can still
+            # identify which passages were the supporting facts.
+            "gold_titles":     sorted(gold_titles),
+            "gold_answer":     rec["answer"],
             "reasoning_graph": graph,
-            "raw":            rec,
+            "raw":             rec,
         }
 
     examples = [_normalise(r) for r in sampled]
@@ -563,14 +579,17 @@ def run_generation(cfg: dict, dry_run: bool = False) -> Path:
                         exist_ok=True
                     )
                     
+                    repo_file_path = os.environ.get("HF_PATH_IN_REPO", "2wikimultihopqa/generated_cot.jsonl")
+                    is_distractor = cfg.get("data", {}).get("use_distractor_context", True)
+                    mode_label = "Distractors" if is_distractor else "Gold-only"
                     api.upload_file(
                         path_or_fileobj=str(out_path),
-                        path_in_repo="2wikimultihopqa/generated_cot.jsonl",
+                        path_in_repo=repo_file_path,
                         repo_id=os.environ.get("HF_REPO_ID"),
                         repo_type="dataset",
-                        commit_message=f"Checkpoint: {min(i + chunk_size, len(examples_to_run))} examples processed"
+                        commit_message=f"Checkpoint ({mode_label}): {min(i + chunk_size, len(examples_to_run))} examples processed"
                     )
-                    logger.info("Successfully uploaded checkpoint to HF: %s", os.environ.get("HF_REPO_ID"))
+                    logger.info("Successfully uploaded checkpoint to HF: %s (%s)", os.environ.get("HF_REPO_ID"), repo_file_path)
                 except Exception as e:
                     logger.warning("Failed to upload checkpoint to HF: %s", e)
                     

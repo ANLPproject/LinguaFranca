@@ -20,6 +20,19 @@ data:
     val:   0.20
     test:  0.20
 
+  # ── RAG Distractor Setting ───────────────────────────────────────────────
+  # use_distractor_context: true  (RECOMMENDED)
+  #   Include ALL 10 passages per question (2 gold + 8 distractors), exactly
+  #   as a real RAG pipeline would return them.  The model must locate the
+  #   supporting passages among noise — this is what creates RAG failures and
+  #   lets the probe learn to detect them.  Required for Phase 3 intervention.
+  #
+  # use_distractor_context: false
+  #   Legacy / ablation mode.  Only gold passages are shown, so the model
+  #   almost never fails due to retrieval noise.  Useful ONLY for sanity
+  #   checks or to compare distractor vs. gold-only probe accuracy.
+  use_distractor_context: true
+
   # How many examples to sample from 2WikiMultihopQA BEFORE augmentation.
   # After counterfactual augmentation the final count will be higher.
   #
