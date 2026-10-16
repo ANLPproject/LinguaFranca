@@ -579,9 +579,12 @@ def run_generation(cfg: dict, dry_run: bool = False) -> Path:
                         exist_ok=True
                     )
                     
-                    repo_file_path = os.environ.get("HF_PATH_IN_REPO", "2wikimultihopqa/generated_cot.jsonl")
                     is_distractor = cfg.get("data", {}).get("use_distractor_context", True)
                     mode_label = "Distractors" if is_distractor else "Gold-only"
+                    subfolder = os.environ.get("HF_SUBFOLDER", "distractor_rag" if is_distractor else "")
+                    prefix = f"{subfolder}/" if subfolder else ""
+                    
+                    repo_file_path = os.environ.get("HF_PATH_IN_REPO", f"{prefix}data/raw/2wikimultihopqa/generated_cot.jsonl")
                     api.upload_file(
                         path_or_fileobj=str(out_path),
                         path_in_repo=repo_file_path,
@@ -589,6 +592,16 @@ def run_generation(cfg: dict, dry_run: bool = False) -> Path:
                         repo_type="dataset",
                         commit_message=f"Checkpoint ({mode_label}): {min(i + chunk_size, len(examples_to_run))} examples processed"
                     )
+                    
+                    # Also checkpoint newly extracted hidden states so crashes don't lose .pt files
+                    if cfg["hidden_states"].get("extract", True) and hs_dir.exists():
+                        api.upload_folder(
+                            folder_path=str(hs_dir),
+                            path_in_repo=f"{prefix}data/hidden_states",
+                            repo_id=os.environ.get("HF_REPO_ID"),
+                            repo_type="dataset",
+                            commit_message=f"Checkpoint HS ({mode_label}): {min(i + chunk_size, len(examples_to_run))} examples"
+                        )
                     logger.info("Successfully uploaded checkpoint to HF: %s (%s)", os.environ.get("HF_REPO_ID"), repo_file_path)
                 except Exception as e:
                     logger.warning("Failed to upload checkpoint to HF: %s", e)

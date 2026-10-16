@@ -35,17 +35,7 @@ data:
 
   # How many examples to sample from 2WikiMultihopQA BEFORE augmentation.
   # After counterfactual augmentation the final count will be higher.
-  #
-  # LAYER SELECTION WORKFLOW (practical 3-step):
-  #   Step 1 — Set n_source_examples: 200 and layers: "all", then run.
-  #             This is the cheap pilot (36 layers x 200 examples ≈ trivial cost).
-  #   Step 2 — Run phase2_probing to train a quick linear probe per layer on
-  #             the pilot output. Plot accuracy vs layer depth to find the
-  #             informative range (usually a clear peak in the middle layers).
-  #   Step 3 — Lock the 5-8 best layers (e.g. [8,12,16,20,24,28]) into the
-  #             layers list below, bump n_source_examples back to 8000, and
-  #             re-run.  Storage and runtime drop by ~6-7x.
-  n_source_examples: 2000   # Set to 2000 for your main run
+  n_source_examples: 4000   # 4000 examples for robust RAG probe training and evaluation
 
   datasets:
     "2wikimultihopqa":
