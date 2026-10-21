@@ -431,26 +431,42 @@ def run_generation(cfg: dict, dry_run: bool = False) -> Path:
         """
         evidences = rec.get("evidences", [])
         graph = []
-        for i, ev in enumerate(evidences):
-            if hasattr(ev, '__len__') and not isinstance(ev, (str, dict)) and len(ev) >= 3:
-                gold_ent = ev[2]
-            elif hasattr(ev, 'get'):
-                gold_ent = ev.get("val") or ev.get("object") or ev.get("value") or ""
-            else:
-                gold_ent = ""
-            graph.append({"hop": i + 1, "gold_entity": gold_ent})
+        if isinstance(evidences, dict):
+            vals = evidences.get("value") or evidences.get("val") or evidences.get("object") or []
+            for i, val in enumerate(vals):
+                graph.append({"hop": i + 1, "gold_entity": str(val)})
+        elif isinstance(evidences, (list, tuple)):
+            for i, ev in enumerate(evidences):
+                if hasattr(ev, '__len__') and not isinstance(ev, (str, dict)) and len(ev) >= 3:
+                    gold_ent = ev[2]
+                elif hasattr(ev, 'get'):
+                    gold_ent = ev.get("val") or ev.get("object") or ev.get("value") or ""
+                else:
+                    gold_ent = ""
+                graph.append({"hop": i + 1, "gold_entity": str(gold_ent)})
 
-        # supporting_facts: [[title, sent_id], ...] or [{"title": ..., "sent_id": ...}, ...]
-        def _sf_title(sf):
-            if hasattr(sf, '__len__') and not isinstance(sf, (str, dict)):
-                return sf[0] if len(sf) > 0 else ""
-            elif hasattr(sf, 'get'):
-                return sf.get("title") or sf.get("key") or ""
-            return ""
+        # supporting_facts can be:
+        # 1. HuggingFace columnar dict: {"title": [...], "sent_id": [...]}
+        # 2. list-of-lists: [[title, sent_id], ...]
+        # 3. list-of-dicts: [{"title": ..., "sent_id": ...}, ...]
+        sfs = rec.get("supporting_facts", [])
+        gold_titles = set()
+        if isinstance(sfs, dict):
+            for t in sfs.get("title", []):
+                if t:
+                    gold_titles.add(t)
+        elif isinstance(sfs, (list, tuple)):
+            for sf in sfs:
+                if isinstance(sf, (list, tuple)):
+                    t = sf[0] if sf else ""
+                elif isinstance(sf, dict):
+                    t = sf.get("title", sf.get("key", ""))
+                else:
+                    t = ""
+                if t:
+                    gold_titles.add(t)
 
-        gold_titles = {_sf_title(sf) for sf in rec.get("supporting_facts", [])} - {""}
-
-        # Handle Hugging Face columnar dictionary format
+        # Handle Hugging Face columnar dictionary format for context
         ctx_obj = rec.get("context", [])
         if isinstance(ctx_obj, dict):
             titles = ctx_obj.get("title", [])
@@ -526,20 +542,36 @@ def run_generation(cfg: dict, dry_run: bool = False) -> Path:
         else:
             retrieval_condition = "neither"
 
+        # Check presence of gold bridging entities and gold answer in retrieved context
+        context_lower = full_context.lower()
+        for node in graph:
+            ge = node.get("gold_entity", "")
+            node["in_context"] = bool(ge and ge.lower() in context_lower)
+
+        gold_entities_in_context = [node.get("in_context", False) for node in graph]
+        gold_ans = str(rec.get("answer", ""))
+        gold_answer_in_context = bool(gold_ans and gold_ans.lower() in context_lower)
+
         return {
-            "id":                  rec.get("_id") or rec.get("id") or rec.get("qid") or f"unknown_{uuid.uuid4().hex[:8]}",
-            "source":              "2wikimultihopqa",
-            "question":            question_text,
-            "context":             full_context,
+            "id":                       rec.get("_id") or rec.get("id") or rec.get("qid") or f"unknown_{uuid.uuid4().hex[:8]}",
+            "source":                   "2wikimultihopqa",
+            "question":                 question_text,
+            "context":                  full_context,
             # Ground-truth supporting passage titles (always stored for labelling)
-            "gold_titles":         sorted(gold_titles),
+            "gold_titles":              sorted(gold_titles),
             # Which passages TF-IDF actually retrieved (top-K)
-            "retrieved_titles":    retrieved_titles,
+            "retrieved_titles":         retrieved_titles,
             # Retrieval condition: both_present / only_p1 / only_p2 / neither
-            "retrieval_condition": retrieval_condition,
-            "gold_answer":         rec["answer"],
-            "reasoning_graph":     graph,
-            "raw":                 rec,
+            "retrieval_condition":      retrieval_condition,
+            # Passage-level hit flags
+            "gold_p1_retrieved":        g1_hit,
+            "gold_p2_retrieved":        g2_hit,
+            # Entity-level hit flags in retrieved context
+            "gold_entities_in_context": gold_entities_in_context,
+            "gold_answer_in_context":   gold_answer_in_context,
+            "gold_answer":              gold_ans,
+            "reasoning_graph":          graph,
+            "raw":                      rec,
         }
 
     examples = [_normalise(r) for r in sampled]
@@ -624,6 +656,18 @@ def run_generation(cfg: dict, dry_run: bool = False) -> Path:
                         exist_ok=True
                     )
                     
+                    hf_revision = os.environ.get("HF_REVISION", "main")
+                    if hf_revision and hf_revision != "main":
+                        try:
+                            api.create_branch(
+                                repo_id=os.environ.get("HF_REPO_ID"),
+                                branch=hf_revision,
+                                repo_type="dataset",
+                                exist_ok=True
+                            )
+                        except Exception as be:
+                            logger.debug("HF branch create/check: %s", be)
+
                     is_distractor = cfg.get("data", {}).get("use_distractor_context", True)
                     mode_label = "Distractors" if is_distractor else "Gold-only"
                     subfolder = os.environ.get("HF_SUBFOLDER", "distractor_rag" if is_distractor else "")
@@ -634,6 +678,7 @@ def run_generation(cfg: dict, dry_run: bool = False) -> Path:
                         path_or_fileobj=str(out_path),
                         path_in_repo=repo_file_path,
                         repo_id=os.environ.get("HF_REPO_ID"),
+                        revision=hf_revision,
                         repo_type="dataset",
                         commit_message=f"Checkpoint ({mode_label}): {min(i + chunk_size, len(examples_to_run))} examples processed"
                     )
@@ -644,10 +689,11 @@ def run_generation(cfg: dict, dry_run: bool = False) -> Path:
                             folder_path=str(hs_dir),
                             path_in_repo=f"{prefix}data/hidden_states",
                             repo_id=os.environ.get("HF_REPO_ID"),
+                            revision=hf_revision,
                             repo_type="dataset",
                             commit_message=f"Checkpoint HS ({mode_label}): {min(i + chunk_size, len(examples_to_run))} examples"
                         )
-                    logger.info("Successfully uploaded checkpoint to HF: %s (%s)", os.environ.get("HF_REPO_ID"), repo_file_path)
+                    logger.info("Successfully uploaded checkpoint to HF: %s [%s] (%s)", os.environ.get("HF_REPO_ID"), hf_revision, repo_file_path)
                 except Exception as e:
                     logger.warning("Failed to upload checkpoint to HF: %s", e)
                     
