@@ -48,7 +48,33 @@ import yaml
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+import numpy as np
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+
 logger = logging.getLogger(__name__)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TF-IDF passage ranker  (used inside _normalise to simulate weak retrieval)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _tfidf_rank(question: str, passage_texts: list, top_k: int) -> list:
+    """
+    Rank passage_texts by TF-IDF cosine similarity to `question`.
+    Returns a list of indices (length min(top_k, len(passages))),
+    sorted descending by score.
+    """
+    if not passage_texts:
+        return []
+    try:
+        vec = TfidfVectorizer(stop_words="english")
+        mat = vec.fit_transform(passage_texts + [question])
+        scores = cosine_similarity(mat[-1], mat[:-1])[0]
+        return np.argsort(scores)[::-1][:top_k].tolist()
+    except ValueError:
+        # Degenerate vocabulary (e.g. all stop-words) — fall back to first k
+        return list(range(min(top_k, len(passage_texts))))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -433,68 +459,87 @@ def run_generation(cfg: dict, dry_run: bool = False) -> Path:
         else:
             context_list = ctx_obj
             
-        # ── Context assembly ──────────────────────────────────────────────────
-        # use_distractor_context=True  → include ALL 10 passages (2 gold + 8
-        #   distractors), exactly as a real RAG retriever would return them.
-        #   This is the correct setting for the RAG intervention pipeline.
-        # use_distractor_context=False → legacy mode: gold passages only
-        #   (useful only for ablations / sanity checks).
-        use_distractor = cfg.get("data", {}).get("use_distractor_context", True)
-
-        full_context = ""
-        matched_titles = set()
+        # ── Parse all candidate passages into (title, text) pairs ────────────
+        all_passages = []   # list of {"title": str, "text": str}
         for ctx in context_list:
             if isinstance(ctx, (list, tuple)):
-                t = ctx[0] if ctx else ""
+                t     = ctx[0] if ctx else ""
                 sents = ctx[1] if len(ctx) > 1 else []
             elif isinstance(ctx, dict):
-                t = ctx.get("title") or ctx.get("key") or ""
+                t     = ctx.get("title") or ctx.get("key") or ""
                 sents = ctx.get("sentences") or ctx.get("value") or []
             else:
                 continue
-
-            # In gold-only mode, skip passages not in supporting_facts
-            if not use_distractor and gold_titles and t not in gold_titles:
-                continue
-
             if isinstance(sents, (list, tuple)):
                 sents = " ".join(str(s) for s in sents)
+            all_passages.append({"title": t, "text": str(sents)})
 
-            # Mark gold passages with [GOLD] prefix so the model (and our
-            # analysis scripts) can optionally identify them, but the model
-            # still has to read through all passages to find the right one.
-            if t in gold_titles:
-                full_context += f"Title: {t}\n{sents}\n\n"
-                matched_titles.add(t)
-            else:
-                full_context += f"Title: {t}\n{sents}\n\n"
+        # ── Retrieval mode ────────────────────────────────────────────────────
+        # use_distractor_context=False → legacy gold-only (ablation baseline)
+        # use_distractor_context=True  → TF-IDF top-K retrieval (RAG simulation)
+        use_distractor = cfg.get("data", {}).get("use_distractor_context", True)
+        top_k          = cfg.get("data", {}).get("retriever_top_k", 5)
+        question_text  = rec["question"]
 
-        # Fallback: if nothing was collected (malformed record), use first 4
-        if not full_context.strip():
-            for ctx in context_list[:4]:
-                if isinstance(ctx, (list, tuple)):
-                    t = ctx[0] if ctx else ""
-                    sents = ctx[1] if len(ctx) > 1 else []
-                elif isinstance(ctx, dict):
-                    t = ctx.get("title") or ctx.get("key") or ""
-                    sents = ctx.get("sentences") or ctx.get("value") or []
-                else:
-                    continue
-                if isinstance(sents, (list, tuple)):
-                    sents = " ".join(str(s) for s in sents)
-                full_context += f"Title: {t}\n{sents}\n\n"
+        if not use_distractor:
+            # Gold-only ablation: always give the model the correct passages
+            selected = [p for p in all_passages if p["title"] in gold_titles]
+            if not selected:
+                selected = all_passages[:4]
+            retrieved_titles = [p["title"] for p in selected]
+        else:
+            # TF-IDF retrieval: rank all candidates by question similarity
+            texts = [p["text"] for p in all_passages]
+            top_idx = _tfidf_rank(question_text, texts, top_k=top_k)
+            if not top_idx:
+                top_idx = list(range(min(top_k, len(all_passages))))
+            selected = [all_passages[i] for i in top_idx]
+            retrieved_titles = [p["title"] for p in selected]
+
+        # ── Build context string from selected passages ────────────────────────
+        full_context = "".join(
+            f"Title: {p['title']}\n{p['text']}\n\n" for p in selected
+        ).strip()
+
+        # Fallback: if context is empty (malformed record), use first 4 passages
+        if not full_context and all_passages:
+            full_context = "".join(
+                f"Title: {p['title']}\n{p['text']}\n\n"
+                for p in all_passages[:4]
+            ).strip()
+            retrieved_titles = [p["title"] for p in all_passages[:4]]
+
+        # ── Compute retrieval condition for probe analysis ─────────────────────
+        gold_set = set(gold_titles)
+        retrieved_set = set(retrieved_titles)
+        gold_list = sorted(gold_set)
+        g1_hit = gold_list[0] in retrieved_set if len(gold_list) > 0 else None
+        g2_hit = gold_list[1] in retrieved_set if len(gold_list) > 1 else None
+        if g1_hit and g2_hit:
+            retrieval_condition = "both_present"
+        elif g1_hit and not g2_hit:
+            retrieval_condition = "only_p1"
+        elif not g1_hit and g2_hit:
+            retrieval_condition = "only_p2"
+        elif g1_hit is None:
+            retrieval_condition = "unknown"
+        else:
+            retrieval_condition = "neither"
 
         return {
-            "id":              rec.get("_id") or rec.get("id") or rec.get("qid") or f"unknown_{uuid.uuid4().hex[:8]}",
-            "source":          "2wikimultihopqa",
-            "question":        rec["question"],
-            "context":         full_context.strip(),
-            # Store gold passage titles so probe/labelling scripts can still
-            # identify which passages were the supporting facts.
-            "gold_titles":     sorted(gold_titles),
-            "gold_answer":     rec["answer"],
-            "reasoning_graph": graph,
-            "raw":             rec,
+            "id":                  rec.get("_id") or rec.get("id") or rec.get("qid") or f"unknown_{uuid.uuid4().hex[:8]}",
+            "source":              "2wikimultihopqa",
+            "question":            question_text,
+            "context":             full_context,
+            # Ground-truth supporting passage titles (always stored for labelling)
+            "gold_titles":         sorted(gold_titles),
+            # Which passages TF-IDF actually retrieved (top-K)
+            "retrieved_titles":    retrieved_titles,
+            # Retrieval condition: both_present / only_p1 / only_p2 / neither
+            "retrieval_condition": retrieval_condition,
+            "gold_answer":         rec["answer"],
+            "reasoning_graph":     graph,
+            "raw":                 rec,
         }
 
     examples = [_normalise(r) for r in sampled]

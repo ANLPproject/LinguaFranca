@@ -33,6 +33,11 @@ data:
   #   checks or to compare distractor vs. gold-only probe accuracy.
   use_distractor_context: true
 
+  # How many passages TF-IDF returns per question (top-K).
+  # Measured recall@5 on 2WikiMultihopQA: both_present=49.4%, miss_rate=50.6%.
+  # Recall@3 would be harder; recall@7 softer. K=5 is the measured default.
+  retriever_top_k: 5
+
   # How many examples to sample from 2WikiMultihopQA BEFORE augmentation.
   # After counterfactual augmentation the final count will be higher.
   n_source_examples: 4000   # 4000 examples for robust RAG probe training and evaluation
