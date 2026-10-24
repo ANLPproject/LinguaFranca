@@ -124,32 +124,67 @@ def run(raw_dir: str, n: int, k: int, out_file: str):
 
         top_k_idx        = tfidf_top_k(question, passages, k=k)
         retrieved_titles = {passages[i]["title"] for i in top_k_idx}
-        gold_list        = sorted(gold_titles)
 
-        # 2WikiMultihopQA has exactly 2 gold passages per example
-        g1 = gold_list[0] if len(gold_list) > 0 else None
-        g2 = gold_list[1] if len(gold_list) > 1 else None
+        # 2WikiMultihopQA has exactly 2 gold passages per example.
+        # Determine hop order by checking which gold title appears in the question
+        # (the entry entity is hop-1). Fall back to evidences[0] subject, then alpha.
+        question_lower = question.lower()
+        hop1_title = None
+        for t in gold_titles:
+            if t.lower() in question_lower:
+                hop1_title = t
+                break
 
-        p1_hit = (g1 in retrieved_titles) if g1 else None
-        p2_hit = (g2 in retrieved_titles) if g2 else None
+        if hop1_title is None:
+            evidences = rec.get("evidences", [])
+            ev0_subject = None
+            if isinstance(evidences, dict):
+                subj_list = evidences.get("subject") or evidences.get("sub") or []
+                ev0_subject = subj_list[0] if subj_list else None
+            elif isinstance(evidences, (list, tuple)) and evidences:
+                ev0 = evidences[0]
+                if isinstance(ev0, (list, tuple)) and ev0:
+                    ev0_subject = str(ev0[0])
+                elif isinstance(ev0, dict):
+                    ev0_subject = ev0.get("subject") or ev0.get("sub") or ev0.get("page")
+            if ev0_subject:
+                ev0_lower = ev0_subject.lower()
+                for t in gold_titles:
+                    if (t.lower() == ev0_lower or t.lower().startswith(ev0_lower)
+                            or ev0_lower.startswith(t.lower())):
+                        hop1_title = t
+                        break
 
-        if p1_hit and p2_hit:
+        if hop1_title is None:
+            gold_list = sorted(gold_titles)
+            hop1_title = gold_list[0] if gold_list else None
+
+        remaining = [t for t in gold_titles if t != hop1_title]
+        hop2_title = remaining[0] if remaining else None
+
+        hop1_hit = (hop1_title in retrieved_titles) if hop1_title else None
+        hop2_hit = (hop2_title in retrieved_titles) if hop2_title else None
+
+        if hop1_hit and hop2_hit:
             condition = "both_present"
-        elif p1_hit and not p2_hit:
-            condition = "only_p1"
-        elif not p1_hit and p2_hit:
-            condition = "only_p2"
+        elif hop1_hit and not hop2_hit:
+            condition = "only_hop1_passage"
+        elif not hop1_hit and hop2_hit:
+            condition = "only_hop2_passage"
         else:
             condition = "neither"
+
+        # Store titles in hop order (hop-1 first)
+        gold_titles_ordered = ([hop1_title] if hop1_title else []) + ([hop2_title] if hop2_title else [])
 
         results.append({
             "id":               rec.get("_id") or rec.get("id") or f"unk_{uuid.uuid4().hex[:6]}",
             "question":         question,
-            "gold_titles":      gold_list,
+            "gold_titles":      gold_titles_ordered,
             "retrieved_titles": sorted(retrieved_titles),
             "n_passages":       len(passages),
-            "p1_hit":           p1_hit,
-            "p2_hit":           p2_hit,
+            "hop1_hit":         hop1_hit,
+            "hop2_hit":         hop2_hit,
             "condition":        condition,
         })
 
@@ -157,12 +192,12 @@ def run(raw_dir: str, n: int, k: int, out_file: str):
     n_total     = len(results)
     cond_counts = Counter(r["condition"] for r in results)
 
-    p1_hits  = [r for r in results if r["p1_hit"] is True]
-    p2_hits  = [r for r in results if r["p2_hit"] is True]
-    p2_total = [r for r in results if r["p2_hit"] is not None]
+    hop1_hits  = [r for r in results if r["hop1_hit"] is True]
+    hop2_hits  = [r for r in results if r["hop2_hit"] is True]
+    hop2_total = [r for r in results if r["hop2_hit"] is not None]
 
-    recall_p1   = len(p1_hits) / n_total    if n_total   else 0.0
-    recall_p2   = len(p2_hits) / len(p2_total) if p2_total else 0.0
+    recall_hop1 = len(hop1_hits) / n_total         if n_total    else 0.0
+    recall_hop2 = len(hop2_hits) / len(hop2_total) if hop2_total else 0.0
     recall_both = cond_counts["both_present"] / n_total if n_total else 0.0
 
     print("\n" + "=" * 60)
@@ -171,9 +206,9 @@ def run(raw_dir: str, n: int, k: int, out_file: str):
     print(f"  Examples analysed     : {n_total}")
     print(f"  Passages per example  : ~10  (top-{k} retrieved)")
     print()
-    print(f"  Recall@{k} -- gold P1 : {recall_p1*100:.1f}%")
-    print(f"  Recall@{k} -- gold P2 : {recall_p2*100:.1f}%  (of examples with P2)")
-    print(f"  Both gold retrieved   : {recall_both*100:.1f}%")
+    print(f"  Recall@{k} -- hop-1 passage : {recall_hop1*100:.1f}%")
+    print(f"  Recall@{k} -- hop-2 passage : {recall_hop2*100:.1f}%  (of examples with hop-2)")
+    print(f"  Both gold retrieved          : {recall_both*100:.1f}%")
     print()
     print("  Condition breakdown:")
     for cond, count in sorted(cond_counts.items(), key=lambda x: -x[1]):
@@ -193,7 +228,7 @@ def run(raw_dir: str, n: int, k: int, out_file: str):
         print("  passages from a different index to increase difficulty.")
     elif miss_rate < 0.25:
         print("  OK: Moderate miss rate. TF-IDF creates some failures.")
-        print("  Focus on the 'only_p2' and 'neither' subsets for probe training.")
+        print("  Focus on 'only_hop2_passage' and 'neither' subsets for probe training.")
         print("  Consider also reporting recall@3 for a harder cut.")
     else:
         print("  GOOD: TF-IDF miss rate is substantial.")

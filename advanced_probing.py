@@ -14,61 +14,85 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.model_selection import GroupShuffleSplit
 import sys
 
-def extract_data(ex_list, hs_dir, layer_idx=None):
-    """Extracts X (hidden states), X_text (raw text), y (labels), is_counterfactual, hop_idxs, and group_ids."""
-    X_hs, X_text, y, is_cf, hop_idxs, group_ids = [], [], [], [], [], []
+def extract_data(ex_list, hs_dir, layer_idx=None, hop_filter=None):
+    """
+    Extracts X (hidden states), X_text (raw text), y (labels),
+    is_counterfactual, hop_idxs, group_ids, retrieval_conditions, gold_entities.
+
+    hop_filter: None = all hops; 0 = hop-1 only; 1 = hop-2 only.
+    """
+    X_hs, X_text, y, is_cf, hop_idxs, group_ids, ret_conds, gold_ents = [], [], [], [], [], [], [], []
     for ex in ex_list:
         pt_path = hs_dir / f"{ex['id']}.pt"
         if not pt_path.exists():
             continue
-            
-        data = torch.load(pt_path)
+
+        data = torch.load(pt_path, weights_only=False)
         pooled = data['pooled']
-        
+
         for hop in ex.get('hops', []):
             h_idx = hop['hop_idx'] - 1
-            if hop.get('label') in (0, 1) and h_idx < pooled.shape[1]:
-                if layer_idx is not None:
-                    X_hs.append(pooled[layer_idx, h_idx].detach().numpy())
-                else:
-                    X_hs.append(None)
-                X_text.append(hop['text'])
-                y.append(hop['label'])
-                is_cf.append(ex.get("is_counterfactual", False))
-                hop_idxs.append(h_idx)
-                group_ids.append(ex.get("clean_pair_id", ex["id"]))
-                
-    return np.array(X_hs) if layer_idx is not None else None, X_text, np.array(y), np.array(is_cf), np.array(hop_idxs), np.array(group_ids)
+            if hop.get('label') not in (0, 1):
+                continue
+            if hop_filter is not None and h_idx != hop_filter:
+                continue
+            if h_idx >= pooled.shape[1]:
+                continue
+            if layer_idx is not None:
+                X_hs.append(np.nan_to_num(pooled[layer_idx, h_idx].detach().numpy()))
+            else:
+                X_hs.append(None)
+            X_text.append(hop.get('text', ''))
+            y.append(hop['label'])
+            is_cf.append(ex.get('is_counterfactual', False))
+            hop_idxs.append(h_idx)
+            group_ids.append(ex.get('clean_pair_id', ex['id']))
+            ret_conds.append(ex.get('retrieval_condition', 'unknown'))
+            gold_ents.append(hop.get('bridging_entity_gold', ''))
 
-def run_advanced_probing_all_layers(labels_file, hs_dir):
+    return (
+        np.array(X_hs) if layer_idx is not None else None,
+        X_text, np.array(y), np.array(is_cf),
+        np.array(hop_idxs), np.array(group_ids),
+        np.array(ret_conds), np.array(gold_ents)
+    )
+
+def run_advanced_probing_all_layers(labels_file, hs_dir, probe_save_dir=None):
     hs_dir = Path(hs_dir)
+    if probe_save_dir is None:
+        probe_save_dir = hs_dir.parent / 'probes'
+    probe_save_dir = Path(probe_save_dir)
+    probe_save_dir.mkdir(parents=True, exist_ok=True)
+
     with open(labels_file) as f:
         examples = [json.loads(l) for l in f]
-        
-    valid_ex = [ex for ex in examples if (hs_dir / f"{ex['id']}.pt").exists()]
-    
-    # 6. Label Noise Check on Natural Hops
-    natural_failures = [h["match_method"] for e in valid_ex if not e.get("is_counterfactual") 
-                       for h in e.get("hops", []) if h.get("label") == 1]
-    print("=" * 140)
-    print("LABEL NOISE CHECK (Natural failures match method):")
-    print(Counter(natural_failures))
-    print("=" * 140)
 
-    # 3. GroupShuffleSplit to avoid train/test leak
-    groups = [ex.get("clean_pair_id", ex["id"]) for ex in valid_ex]
+    valid_ex = [ex for ex in examples if (hs_dir / f"{ex['id']}.pt").exists()]
+
+    # Label Noise Check on Natural Hops
+    natural_failures = [h.get('match_method') for e in valid_ex if not e.get('is_counterfactual')
+                        for h in e.get('hops', []) if h.get('label') == 1]
+    rc_counts = Counter(ex.get('retrieval_condition', 'unknown') for ex in valid_ex)
+    print('=' * 140)
+    print('LABEL NOISE CHECK (Natural failures match method):')
+    print(Counter(natural_failures))
+    print(f'RETRIEVAL CONDITION BREAKDOWN: {dict(rc_counts)}')
+    print('=' * 140)
+
+    # GroupShuffleSplit to avoid train/test leak
+    groups = [ex.get('clean_pair_id', ex['id']) for ex in valid_ex]
     gss = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
     train_idx, test_idx = next(gss.split(valid_ex, groups=groups))
     train_ex = [valid_ex[i] for i in train_idx]
-    test_ex = [valid_ex[i] for i in test_idx]
-    
+    test_ex  = [valid_ex[i] for i in test_idx]
+
     # Get available layers
-    sample = torch.load(hs_dir / f"{valid_ex[0]['id']}.pt")
+    sample = torch.load(hs_dir / f"{valid_ex[0]['id']}.pt", weights_only=False)
     layer_indices = sample.get('layer_indices', list(range(sample['pooled'].shape[0])))
-    
-    # Extract base features
-    _, X_train_txt, y_train, _, train_hop_idx, _ = extract_data(train_ex, hs_dir, layer_idx=layer_indices[0])
-    _, X_test_txt, y_test, is_cf_test, test_hop_idx, _ = extract_data(test_ex, hs_dir, layer_idx=layer_indices[0])
+
+    # Extract base features (first layer, for baselines)
+    _, X_train_txt, y_train, _, train_hop_idx, _, _, _ = extract_data(train_ex, hs_dir, layer_idx=layer_indices[0])
+    _, X_test_txt,  y_test, is_cf_test, test_hop_idx, _, ret_cond_test, _ = extract_data(test_ex, hs_dir, layer_idx=layer_indices[0])
     
     majority_class_rate = max(np.mean(y_test == 0), np.mean(y_test == 1))
     print(f"MAJORITY CLASS BASELINE: {majority_class_rate:.3f}")
@@ -118,33 +142,32 @@ def run_advanced_probing_all_layers(labels_file, hs_dir):
     print("-" * 65)
     
     for li in layer_indices:
-        X_all, _, y_all, _, _, groups_all = extract_data(valid_ex, hs_dir, layer_idx=li)
+        X_all, _, y_all, _, _, groups_all, _, _ = extract_data(valid_ex, hs_dir, layer_idx=li)
         X_all = np.nan_to_num(X_all)
-        
+
         if len(X_all) == 0:
             continue
-            
-        acc_scores = []
-        auc_scores = []
-        
+
+        acc_scores, auc_scores = [], []
+
         for tr_idx, te_idx in gkf.split(X_all, y_all, groups=groups_all):
             X_tr, X_te = X_all[tr_idx], X_all[te_idx]
             y_tr, y_te = y_all[tr_idx], y_all[te_idx]
-            
+
             if len(np.unique(y_tr)) < 2 or len(np.unique(y_te)) < 2:
                 continue
-                
-            clf = make_pipeline(StandardScaler(), LogisticRegression(max_iter=1000, class_weight='balanced'))
-            clf.fit(X_tr, y_tr)
-            y_pred = clf.predict(X_te)
-            y_prob = clf.predict_proba(X_te)[:, 1]
-            
+
+            clf_cv = make_pipeline(StandardScaler(), LogisticRegression(max_iter=1000, class_weight='balanced'))
+            clf_cv.fit(X_tr, y_tr)
+            y_pred = clf_cv.predict(X_te)
+            y_prob = clf_cv.predict_proba(X_te)[:, 1]
+
             acc_scores.append(accuracy_score(y_te, y_pred))
             auc_scores.append(roc_auc_score(y_te, y_prob))
-            
+
         if acc_scores:
             print(f"Layer {li:<1} | {np.mean(acc_scores):.3f}      | ±{np.std(acc_scores):.3f}   | {np.mean(auc_scores):.3f}       | ±{np.std(auc_scores):.3f}")
-    
+
     print("=" * 140)
 
     # =====================================================================
@@ -158,8 +181,8 @@ def run_advanced_probing_all_layers(labels_file, hs_dir):
     best_layer_idx = 10 if 10 in layer_indices else layer_indices[len(layer_indices)//2]
     
     print(f"Running controls on Layer {best_layer_idx}")
-    X_train_hs, _, _, _, _, _ = extract_data(train_ex, hs_dir, layer_idx=best_layer_idx)
-    X_test_hs, _, _, _, _, _ = extract_data(test_ex, hs_dir, layer_idx=best_layer_idx)
+    X_train_hs, _, _, _, _, _, _, _ = extract_data(train_ex, hs_dir, layer_idx=best_layer_idx)
+    X_test_hs, _, _, _, _, _, _, _  = extract_data(test_ex,  hs_dir, layer_idx=best_layer_idx)
     
     # 1. Shuffled-Label Control for MLP
     mlp = make_pipeline(StandardScaler(), MLPClassifier(hidden_layer_sizes=(128, 64), max_iter=500, random_state=42))
@@ -223,8 +246,7 @@ def run_advanced_probing_all_layers(labels_file, hs_dir):
     # We already have Hop 1 logistic regression trained (clf_h1). Let's test it on Hop 2.
     if np.sum(train_h1_mask) > 0 and (np.sum(train_h2_mask) > 0 or np.sum(test_h2_mask) > 0):
         # Pool all hop 2 examples we have
-        # We need to extract them from the original train/test mix, let's just grab them:
-        X_all_hs, _, y_all, _, hop_all, _ = extract_data(valid_ex, hs_dir, layer_idx=best_layer_idx)
+        X_all_hs, _, y_all, _, hop_all, _, _, _ = extract_data(valid_ex, hs_dir, layer_idx=best_layer_idx)
         
         h2_mask_all = hop_all == 1
         X_all_h2 = X_all_hs[h2_mask_all]
@@ -247,8 +269,8 @@ def run_advanced_probing_all_layers(labels_file, hs_dir):
     layers_to_test = [l for l in layer_indices if 8 <= l <= 14]
     
     for li in layers_to_test:
-        X_tr, _, _, _, _, _ = extract_data(train_ex, hs_dir, layer_idx=li)
-        X_te, _, _, _, _, _ = extract_data(test_ex, hs_dir, layer_idx=li)
+        X_tr, _, _, _, _, _, _, _ = extract_data(train_ex, hs_dir, layer_idx=li)
+        X_te, _, _, _, _, _, _, _ = extract_data(test_ex,  hs_dir, layer_idx=li)
         
         accs = []
         for s in seeds:
@@ -269,22 +291,48 @@ def run_advanced_probing_all_layers(labels_file, hs_dir):
     # =====================================================================
     
     # Save the trained Hop-1 probe for ALL layers for Phase 5 (RAG System)
-    print("\n[+] Saving trained Hop-1 probes for all layers to disk...")
+    print(f"\n[+] Saving trained Hop-1 probes for all layers to {probe_save_dir} ...")
     for li in layer_indices:
-        X_tr, _, y_tr, _, hop_idx_tr, _ = extract_data(train_ex, hs_dir, layer_idx=li)
-        h1_mask_tr = hop_idx_tr == 0   # extract_data stores hop_idx - 1, so hop 1 == 0
+        X_tr, _, y_tr, _, hop_idx_tr, _, _, _ = extract_data(train_ex, hs_dir, layer_idx=li)
+        h1_mask_tr = hop_idx_tr == 0  # hop_idx stored as hop_idx - 1, so hop 1 == 0
         X_tr_h1 = X_tr[h1_mask_tr]
         y_tr_h1 = y_tr[h1_mask_tr]
-        
+
         if len(y_tr_h1) > 0:
             clf_li = make_pipeline(StandardScaler(), LogisticRegression(max_iter=1000, class_weight='balanced', random_state=42))
             clf_li.fit(X_tr_h1, y_tr_h1)
-            probe_save_path = hs_dir.parent / f"hop1_probe_layer{li}.joblib"
+            probe_save_path = probe_save_dir / f"hop1_probe_layer{li}.joblib"
             joblib.dump(clf_li, probe_save_path)
-    
-    import json
-    json.dump([ex["id"] for ex in train_ex], open(hs_dir.parent / "probe_train_ids.json", "w"))
-    print(f"[+] Saved {len(layer_indices)} layer probes to {hs_dir.parent}")
+            # Also save all-hop probe
+            clf_all = make_pipeline(StandardScaler(), LogisticRegression(max_iter=1000, class_weight='balanced', random_state=42))
+            clf_all.fit(X_tr, y_tr)
+            joblib.dump(clf_all, probe_save_dir / f"allhop_probe_layer{li}.joblib")
+
+    json.dump([ex['id'] for ex in train_ex], open(probe_save_dir / 'probe_train_ids.json', 'w'))
+    print(f"[+] Saved {len(layer_indices)} hop-1 + all-hop probes to {probe_save_dir}")
+
+    # =====================================================================
+    # RETRIEVAL CONDITION BREAKDOWN
+    # =====================================================================
+    print("\n" + "=" * 140)
+    print("HOP-1 PROBE ACCURACY BY RETRIEVAL CONDITION")
+    print("=" * 140)
+    print(f"{'Condition':<16} | {'N':>5} | {'Acc':>6} | {'AUROC':>7} | {'Fail%':>6}")
+    print("-" * 55)
+    _, _, _, _, _, _, ret_cond_te, _ = extract_data(test_ex, hs_dir, layer_idx=best_layer_idx)
+    X_te_full, y_te_full, _, _, hop_te_full, _, rc_te_full, _ = extract_data(test_ex, hs_dir, layer_idx=best_layer_idx)
+    h1_full = hop_te_full == 0
+    for cond in ['both_present', 'only_hop1_passage', 'only_hop2_passage', 'neither', 'only_p1', 'only_p2', 'unknown']:
+        mask = h1_full & (rc_te_full == cond)
+        if mask.sum() < 3:
+            continue
+        yc  = y_te_full[mask]
+        Xc  = X_te_full[mask]
+        preds = clf_h1.predict(Xc)
+        probs = clf_h1.predict_proba(Xc)[:, 1]
+        auc_c = roc_auc_score(yc, probs) if len(np.unique(yc)) > 1 else float('nan')
+        print(f"{cond:<16} | {mask.sum():>5} | {accuracy_score(yc, preds):>6.3f} | {auc_c:>7.3f} | {yc.mean()*100:>5.1f}%")
+    print("=" * 140)
 
     # QUALITATIVE ERROR ANALYSIS
     # =====================================================================
@@ -302,9 +350,10 @@ def run_advanced_probing_all_layers(labels_file, hs_dir):
         for ex in test_ex:
             pt_path = hs_dir / f"{ex['id']}.pt"
             if not pt_path.exists(): continue
-            
-            data = torch.load(pt_path)
+
+            data = torch.load(pt_path, weights_only=False)
             pooled = data['pooled']
+            ex_gic = ex.get('gold_entities_in_context', [])
             
             for hop in ex.get('hops', []):
                 h_idx = hop['hop_idx'] - 1
@@ -314,30 +363,57 @@ def run_advanced_probing_all_layers(labels_file, hs_dir):
                     
                     # Predict probability of failure (label=1)
                     prob_fail = clf_h1.predict_proba([vec])[0][1]
+                    gold_in_ctx = ex_gic[h_idx] if h_idx < len(ex_gic) else None
                     
                     qual_results.append({
-                        "prob_fail": prob_fail,
-                        "true_label": hop['label'],
-                        "question": ex['question'],
-                        "gold_entity": hop.get('wiki_links', ['Unknown'])[0] if hop.get('wiki_links') else 'Unknown',
-                        "generated_text": hop['text']
+                        'prob_fail':       float(prob_fail),
+                        'true_label':      hop['label'],
+                        'question':        ex.get('question', ''),
+                        'gold_entity':     hop.get('bridging_entity_gold', hop.get('wiki_links', ['Unknown'])[0] if hop.get('wiki_links') else 'Unknown'),
+                        'generated_text':  hop.get('text', ''),
+                        'retrieval_cond':  ex.get('retrieval_condition', 'unknown'),
+                        'gold_in_context': gold_in_ctx,
                     })
                     
         # Sort by most confident failure predictions
         qual_results.sort(key=lambda x: x["prob_fail"], reverse=True)
         
         for i, res in enumerate(qual_results[:10]):
+            label_str = '1 (Hallucination)' if res['true_label'] == 1 else '0 (Success)'
             print(f"\n--- Sample {i+1} ---")
-            print(f"Question:       {res['question']}")
-            print(f"Gold Entity:    {res['gold_entity']}")
-            print(f"Generated Hop:  {res['generated_text']}")
-            print(f"True Label:     {'1 (Hallucination)' if res['true_label'] == 1 else '0 (Success)'}")
-            print(f"Probe Predicts: {res['prob_fail']*100:.1f}% chance of Failure")
+            print(f"Question:         {res['question']}")
+            print(f"Gold Entity:      {res['gold_entity']}")
+            print(f"Retrieval Cond:   {res['retrieval_cond']}")
+            print(f"Gold in Context:  {res['gold_in_context']}")
+            print(f"Generated Hop:    {res['generated_text']}")
+            print(f"True Label:       {label_str}")
+            print(f"Probe Predicts:   {res['prob_fail']*100:.1f}% chance of Failure")
+
+        # True reasoning failures
+        print("\n" + "=" * 140)
+        print("TRUE REASONING FAILURES (Gold entity IN context, model still failed / label=1)")
+        print("=" * 140)
+        true_rf = [r for r in qual_results if r['true_label'] == 1 and r['gold_in_context'] is True]
+        print(f"Total True Reasoning Failures: {len(true_rf)}")
+        for i, res in enumerate(true_rf[:5]):
+            print(f"\n--- Reasoning Failure {i+1} ---")
+            print(f"Question:         {res['question']}")
+            print(f"Gold Entity:      {res['gold_entity']}")
+            print(f"Retrieval Cond:   {res['retrieval_cond']}")
+            print(f"Generated Hop:    {res['generated_text']}")
+            print(f"Probe Predicts:   {res['prob_fail']*100:.1f}% chance of Failure")
+
+        # Save qualitative results
+        import json as _json
+        qr_path = probe_save_dir / 'qualitative_results.json'
+        _json.dump(qual_results, open(qr_path, 'w'), indent=2)
+        print(f"\n[+] Saved {len(qual_results)} qualitative results to {qr_path}")
             
     print("\n" + "=" * 140)
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
-        print("Usage: python advanced_probing.py <labels_jsonl> <hs_dir>")
+        print("Usage: python advanced_probing.py <labels_jsonl> <hs_dir> [probe_save_dir]")
     else:
-        run_advanced_probing_all_layers(sys.argv[1], sys.argv[2])
+        probe_dir_arg = sys.argv[3] if len(sys.argv) > 3 else None
+        run_advanced_probing_all_layers(sys.argv[1], sys.argv[2], probe_save_dir=probe_dir_arg)

@@ -526,17 +526,58 @@ def run_generation(cfg: dict, dry_run: bool = False) -> Path:
             retrieved_titles = [p["title"] for p in all_passages[:4]]
 
         # ── Compute retrieval condition for probe analysis ─────────────────────
+        # Determine hop order: the gold title that appears in the question text
+        # is the entry entity (hop-1 passage). The other is hop-2.
+        # Fallback: use the subject of evidences[0] to determine which title is hop-1.
         gold_set = set(gold_titles)
         retrieved_set = set(retrieved_titles)
-        gold_list = sorted(gold_set)
-        g1_hit = gold_list[0] in retrieved_set if len(gold_list) > 0 else None
-        g2_hit = gold_list[1] in retrieved_set if len(gold_list) > 1 else None
+        question_lower = question_text.lower()
+
+        hop1_title = None
+        hop2_title = None
+        for t in gold_set:
+            if t.lower() in question_lower:
+                hop1_title = t
+                break
+
+        if hop1_title is None:
+            # Fallback: evidences[0][0] is the subject of the first triple (hop-1 entity)
+            evidences = rec.get("evidences", [])
+            ev0_subject = None
+            if isinstance(evidences, dict):
+                subj_list = evidences.get("subject") or evidences.get("sub") or []
+                ev0_subject = subj_list[0] if subj_list else None
+            elif isinstance(evidences, (list, tuple)) and evidences:
+                ev0 = evidences[0]
+                if isinstance(ev0, (list, tuple)) and ev0:
+                    ev0_subject = str(ev0[0])
+                elif isinstance(ev0, dict):
+                    ev0_subject = ev0.get("subject") or ev0.get("sub") or ev0.get("page") or None
+            if ev0_subject:
+                # Match ev0_subject to one of the gold titles (case-insensitive prefix)
+                ev0_lower = ev0_subject.lower()
+                for t in gold_set:
+                    if t.lower() == ev0_lower or t.lower().startswith(ev0_lower) or ev0_lower.startswith(t.lower()):
+                        hop1_title = t
+                        break
+
+        # If still unresolved, fall back to alphabetical (same as before)
+        if hop1_title is None:
+            gold_list = sorted(gold_set)
+            hop1_title = gold_list[0] if gold_list else None
+
+        remaining = [t for t in gold_set if t != hop1_title]
+        hop2_title = remaining[0] if remaining else None
+
+        g1_hit = (hop1_title in retrieved_set) if hop1_title else None
+        g2_hit = (hop2_title in retrieved_set) if hop2_title else None
+
         if g1_hit and g2_hit:
             retrieval_condition = "both_present"
         elif g1_hit and not g2_hit:
-            retrieval_condition = "only_p1"
+            retrieval_condition = "only_hop1_passage"
         elif not g1_hit and g2_hit:
-            retrieval_condition = "only_p2"
+            retrieval_condition = "only_hop2_passage"
         elif g1_hit is None:
             retrieval_condition = "unknown"
         else:
@@ -552,20 +593,23 @@ def run_generation(cfg: dict, dry_run: bool = False) -> Path:
         gold_ans = str(rec.get("answer", ""))
         gold_answer_in_context = bool(gold_ans and gold_ans.lower() in context_lower)
 
+        # Store gold titles in hop order (hop-1 first, hop-2 second)
+        gold_titles_ordered = ([hop1_title] if hop1_title else []) + ([hop2_title] if hop2_title else [])
+
         return {
             "id":                       rec.get("_id") or rec.get("id") or rec.get("qid") or f"unknown_{uuid.uuid4().hex[:8]}",
             "source":                   "2wikimultihopqa",
             "question":                 question_text,
             "context":                  full_context,
-            # Ground-truth supporting passage titles (always stored for labelling)
-            "gold_titles":              sorted(gold_titles),
+            # Ground-truth supporting passage titles in hop order (hop-1 first)
+            "gold_titles":              gold_titles_ordered,
             # Which passages TF-IDF actually retrieved (top-K)
             "retrieved_titles":         retrieved_titles,
-            # Retrieval condition: both_present / only_p1 / only_p2 / neither
+            # Retrieval condition: both_present / only_hop1_passage / only_hop2_passage / neither
             "retrieval_condition":      retrieval_condition,
-            # Passage-level hit flags
-            "gold_p1_retrieved":        g1_hit,
-            "gold_p2_retrieved":        g2_hit,
+            # Passage-level hit flags (hop-order aware)
+            "gold_hop1_retrieved":      g1_hit,
+            "gold_hop2_retrieved":      g2_hit,
             # Entity-level hit flags in retrieved context
             "gold_entities_in_context": gold_entities_in_context,
             "gold_answer_in_context":   gold_answer_in_context,
