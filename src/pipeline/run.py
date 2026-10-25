@@ -1,0 +1,357 @@
+"""
+src/pipeline/run.py
+───────────────────
+Runs the Phase 3–5 pipeline stage by stage.  Every stage appends to its own
+jsonl file and skips items already done, so a crashed or timed-out Kaggle
+session resumes where it stopped.  --shard/--num-shards splits the GPU stages
+across parallel sessions (copy all shard outputs into one --out dir before
+`evaluate`).
+
+Stages (default: all, in this order)
+──────
+probes    train hop-1/hop-2 probes + CV thresholds (CPU; skipped if --probe-dir has them)
+evalset   2Wiki held-out test questions (natural) + HotpotQA OOD questions
+corpus    retrieval corpus + embeddings
+s0        uninterrupted trajectory per question, probe in monitor mode   (GPU)
+judge     post-hoc LLM judge on hop 1 / hop 2                             (GPU)
+restarts  retrieval + restart for keys q / h1 / h2, batched               (GPU)
+live      latency subset: truly live probe-halt-retrieve-restart, etc.   (GPU)
+parity    live probe features vs the stored Phase 1 features             (CPU)
+evaluate  metrics, tables, figures                                        (CPU)
+
+Example (Kaggle, T4):
+    python -m src.pipeline.run --setting tfidf --out /kaggle/working/pipeline_tfidf
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import random
+import re
+import time
+from pathlib import Path
+
+import numpy as np
+
+from src.pipeline.common import (MODEL_NAME, SETTINGS, append_jsonl, context_titles, download_hidden_states,
+                                 format_passages, hop_label, hop_text, load_setting_examples,
+                                 prompt_from_template, prompt_with_evidence, raw_passages, read_jsonl,
+                                 tfidf_rank, write_jsonl)
+
+ALL_STAGES = ["probes", "evalset", "corpus", "s0", "judge", "restarts", "live", "parity", "evaluate"]
+
+
+def safe(uid: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", uid)
+
+
+def done_uids(path: Path, key=lambda r: r["uid"]) -> set:
+    return {key(r) for r in read_jsonl(path)}
+
+
+def merged(out: Path, stem: str) -> list[dict]:
+    recs = []
+    for p in sorted(out.glob(f"{stem}*.jsonl")):
+        recs += read_jsonl(p)
+    return recs
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Eval set
+# ─────────────────────────────────────────────────────────────────────────────
+
+def load_hotpot(n: int, seed: int) -> list[dict]:
+    from datasets import load_dataset
+    ds = None
+    for name in ("hotpotqa/hotpot_qa", "hotpot_qa"):
+        try:
+            ds = load_dataset(name, "distractor", split="validation")
+            break
+        except Exception as e:                                   # noqa: BLE001
+            print(f"[evalset] could not load {name}: {e.__class__.__name__}: {str(e)[:120]}")
+    if ds is None:
+        raise RuntimeError("HotpotQA could not be loaded")
+    idx = list(range(len(ds)))
+    random.Random(seed).shuffle(idx)
+    return [ds[i] for i in idx[:n]]
+
+
+def build_eval_set(setting: str, out: Path, meta: dict, n_2wiki: int, n_hotpot: int, seed: int = 42):
+    top_k = SETTINGS[setting]["context_top_k"]
+    examples = load_setting_examples(setting)
+    test_ids = set(meta["test_ids"])
+    pool = sorted((e for e in examples if e["id"] in test_ids and not e.get("is_counterfactual")),
+                  key=lambda e: e["id"])
+    random.Random(seed).shuffle(pool)
+    items = []
+    for e in pool[:n_2wiki]:
+        graph = {n["hop"]: n.get("gold_entity", "") for n in e.get("reasoning_graph", [])}
+        labels = {str(k): hop_label(e, k) for k in (1, 2)}
+        items.append(dict(uid=f"2wiki:{e['id']}", dataset="2wiki", id=e["id"], question=e["question"],
+                          gold_answer=e["gold_answer"], prompt=e["prompt"], context=e["context"],
+                          context_titles=context_titles(e["context"]), labels=labels,
+                          gold_entities={str(k): graph.get(k, "") for k in (1, 2)},
+                          first_fail=e.get("first_fail_hop"), stored_cot=e.get("generated_cot", ""),
+                          retrieval_condition=e.get("retrieval_condition", "all_passages")))
+    template = pool[0]["prompt"]
+    hot_passages = []
+    for rec in load_hotpot(n_hotpot, seed):
+        passages = raw_passages(rec)
+        sel = passages if top_k >= len(passages) else \
+            [passages[i] for i in tfidf_rank(rec["question"], [p["text"] for p in passages], top_k)]
+        gold_titles = set(rec["supporting_facts"]["title"]) if isinstance(rec.get("supporting_facts"), dict) else set()
+        sel_titles = {p["title"] for p in sel}
+        n_gold_in = len(gold_titles & sel_titles)
+        cond = "both_present" if n_gold_in >= 2 else ("one_present" if n_gold_in == 1 else "neither")
+        ctx = format_passages(sel)
+        items.append(dict(uid=f"hotpot:{rec['id']}", dataset="hotpotqa", id=rec["id"], question=rec["question"],
+                          gold_answer=rec["answer"], prompt=prompt_from_template(template, ctx, rec["question"]),
+                          context=ctx, context_titles=[p["title"] for p in sel], labels={}, gold_entities={},
+                          first_fail=None, stored_cot="", retrieval_condition=cond,
+                          hotpot_type=rec.get("type"), hotpot_level=rec.get("level")))
+        hot_passages.append(dict(uid=f"hotpot:{rec['id']}", all_passages=passages))
+    write_jsonl(out / "eval_set.jsonl", items)
+    write_jsonl(out / "hotpot_passages.jsonl", hot_passages)
+    print(f"[evalset] {sum(i['dataset'] == '2wiki' for i in items)} 2Wiki test + "
+          f"{sum(i['dataset'] == 'hotpotqa' for i in items)} HotpotQA items")
+    return items
+
+
+def prompt_date(prompt: str) -> str | None:
+    m = re.search(r"Today Date: (.+)\n", prompt)
+    return m.group(1).strip() if m else None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main
+# ─────────────────────────────────────────────────────────────────────────────
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--setting", default="tfidf", choices=list(SETTINGS))
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--stages", default=",".join(ALL_STAGES))
+    ap.add_argument("--probe-dir", default=None, help="default: <out>/probes")
+    ap.add_argument("--probe-sweep", default="none", help="layer sweep when training probes here: none | all")
+    ap.add_argument("--n-2wiki", type=int, default=500)
+    ap.add_argument("--n-hotpot", type=int, default=500)
+    ap.add_argument("--n-live", type=int, default=100, help="latency/equivalence subset size (half per dataset)")
+    ap.add_argument("--n-extra-corpus", type=int, default=20000, help="extra random 2Wiki questions in the corpus")
+    ap.add_argument("--top-k", type=int, default=3, help="passages retrieved per restart")
+    ap.add_argument("--max-new-tokens", type=int, default=400)
+    ap.add_argument("--batch-size", type=int, default=8)
+    ap.add_argument("--shard", type=int, default=0)
+    ap.add_argument("--num-shards", type=int, default=1)
+    ap.add_argument("--model", default=MODEL_NAME)
+    ap.add_argument("--seed", type=int, default=42)
+    args = ap.parse_args()
+
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    stages = [s.strip() for s in args.stages.split(",") if s.strip()]
+    probe_dir = Path(args.probe_dir) if args.probe_dir else out / "probes"
+    sfx = f".shard{args.shard}" if args.num_shards > 1 else ""
+    token = os.environ.get("HF_TOKEN")
+    (out / "run_args.json").write_text(json.dumps(vars(args), indent=1))
+
+    # ── probes ────────────────────────────────────────────────────────────────
+    if "probes" in stages and not (probe_dir / "probes_meta.json").exists():
+        from src.pipeline.probes import train_probes
+        train_probes(args.setting, probe_dir, sweep=args.probe_sweep)
+    meta = json.loads((probe_dir / "probes_meta.json").read_text())
+    if meta["setting"] != args.setting:
+        raise SystemExit(f"probes in {probe_dir} were trained for setting {meta['setting']!r}, not {args.setting!r}")
+
+    # ── eval set ─────────────────────────────────────────────────────────────
+    if "evalset" in stages and not (out / "eval_set.jsonl").exists():
+        build_eval_set(args.setting, out, meta, args.n_2wiki, args.n_hotpot, args.seed)
+    items = read_jsonl(out / "eval_set.jsonl")
+    mine = [it for i, it in enumerate(items) if i % args.num_shards == args.shard]
+    by_uid = {it["uid"]: it for it in items}
+    print(f"[run] setting={args.setting} items={len(items)} this shard={len(mine)}")
+
+    # ── corpus ───────────────────────────────────────────────────────────────
+    retriever = None
+
+    def get_retriever():
+        nonlocal retriever
+        if retriever is None:
+            from src.pipeline.retriever import DenseRetriever, build_corpus
+            cdir = out / "corpus"
+            if (cdir / "embeddings.npy").exists():
+                retriever = DenseRetriever.load(cdir)
+            else:
+                ids = {e["id"] for e in load_setting_examples(args.setting)}
+                corpus = build_corpus(ids, read_jsonl(out / "hotpot_passages.jsonl"), args.n_extra_corpus, args.seed)
+                retriever = DenseRetriever(corpus)
+                retriever.save(cdir)
+        return retriever
+
+    if "corpus" in stages:
+        get_retriever()
+
+    # ── model (GPU stages) ───────────────────────────────────────────────────
+    gpu_stages = {"s0", "judge", "restarts", "live"} & set(stages)
+    model = tok = probes = None
+    if gpu_stages:
+        from src.pipeline.generation import load_model
+        from src.pipeline.probes import ProbeBundle
+        model, tok = load_model(args.model, token)
+        probes = ProbeBundle(probe_dir)
+        print(f"[run] probe layers {probes.layer}  thresholds {probes.tau}")
+
+    # ── s0: monitored trajectories ───────────────────────────────────────────
+    s0_path = out / f"s0{sfx}.jsonl"
+    if "s0" in stages:
+        from src.pipeline.generation import generate_monitored
+        feats_dir = out / "s0_feats"
+        feats_dir.mkdir(exist_ok=True)
+        done = done_uids(s0_path)
+        todo = [it for it in mine if it["uid"] not in done]
+        t0 = time.time()
+        for n, it in enumerate(todo):
+            r = generate_monitored(model, tok, it["prompt"], probes, halt=False, max_new_tokens=args.max_new_tokens)
+            pooled = r.pop("_pooled")
+            np.savez_compressed(feats_dir / f"{safe(it['uid'])}.npz", **{f"h{k}": v for k, v in pooled.items()})
+            r.update(uid=it["uid"], hop_text={str(k): hop_text(r["text"], k) for k in (1, 2)},
+                     reproduced=(r["text"].strip() == it["stored_cot"].strip()) if it["stored_cot"] else None)
+            append_jsonl(s0_path, r)
+            if n % 25 == 0:
+                pf = {k: round(v["p_fail"], 3) for k, v in r["boundaries"].items() if v["p_fail"] is not None}
+                print(f"[s0] {n + 1}/{len(todo)} ({time.time() - t0:.0f}s) n_gen={r['n_gen']} p_fail={pf}", flush=True)
+
+    s0_all = {r["uid"]: r for r in merged(out, "s0")}
+
+    # ── judge ────────────────────────────────────────────────────────────────
+    if "judge" in stages:
+        from src.pipeline.judge import Judge
+        judge = Judge(model, tok, prompt_date(items[0]["prompt"]))
+        j_path = out / f"judge{sfx}.jsonl"
+        done = done_uids(j_path)
+        for n, it in enumerate([it for it in mine if it["uid"] in s0_all and it["uid"] not in done]):
+            s0 = s0_all[it["uid"]]
+            rec = {"uid": it["uid"]}
+            for k in ("1", "2"):
+                if k in s0["boundaries"] and s0["hop_text"][k]:
+                    rec[k] = judge.p_fail(it["context"], it["question"], s0["hop_text"][k])
+            append_jsonl(j_path, rec)
+            if n % 100 == 0:
+                print(f"[judge] {n + 1} done", flush=True)
+
+    # ── restarts ─────────────────────────────────────────────────────────────
+    def restart_requests(it, s0):
+        reqs = [("q", it["question"])]
+        for k in ("1", "2"):
+            if k in s0["boundaries"] and s0["hop_text"][k]:
+                reqs.append((f"h{k}", f"{it['question']} {s0['hop_text'][k]}"))
+        return reqs
+
+    if "restarts" in stages:
+        from src.pipeline.generation import generate_batch
+        ret = get_retriever()
+        r_path = out / f"restarts{sfx}.jsonl"
+        done = done_uids(r_path, key=lambda r: (r["uid"], r["key"]))
+        pending = []
+        for it in mine:
+            if it["uid"] not in s0_all:
+                continue
+            for key, query in restart_requests(it, s0_all[it["uid"]]):
+                if (it["uid"], key) not in done:
+                    hits, ms = ret.search(query, args.top_k, exclude_titles=it["context_titles"])
+                    pending.append(dict(uid=it["uid"], key=key, query=query, retrieved_titles=[h["title"] for h in hits],
+                                        retrieval_ms=ms, prompt=prompt_with_evidence(it["prompt"], hits)))
+        print(f"[restarts] {len(pending)} generations to run")
+        t0 = time.time()
+        chunk = 8 * args.batch_size
+        for s in range(0, len(pending), chunk):
+            part = pending[s:s + chunk]
+            outs = generate_batch(model, tok, [p["prompt"] for p in part], args.max_new_tokens, args.batch_size)
+            for p, o in zip(part, outs):
+                p = {k: v for k, v in p.items() if k != "prompt"}
+                append_jsonl(r_path, {**p, **o})
+            print(f"[restarts] {min(s + chunk, len(pending))}/{len(pending)} ({time.time() - t0:.0f}s)", flush=True)
+
+    # ── live latency / equivalence subset ────────────────────────────────────
+    if "live" in stages:
+        from src.pipeline.generation import generate_monitored
+        from src.pipeline.systems import judge_trigger
+        ret = get_retriever()
+        j_all = {r["uid"]: r for r in merged(out, "judge")}
+        l_path = out / f"live{sfx}.jsonl"
+        done = done_uids(l_path)
+        subset = []
+        for ds in ("2wiki", "hotpotqa"):
+            subset += [it for it in mine if it["dataset"] == ds and it["uid"] in s0_all][: args.n_live // 2]
+
+        def seq_restart(it, query):
+            t = time.perf_counter()
+            hits, ms = ret.search(query, args.top_k, exclude_titles=it["context_titles"])
+            g = generate_monitored(model, tok, prompt_with_evidence(it["prompt"], hits), None,
+                                   max_new_tokens=args.max_new_tokens, keep_pooled=False)
+            return dict(answer=g["answer"], text=g["text"], n_gen=g["n_gen"], retrieval_ms=ms,
+                        wall_ms=(time.perf_counter() - t) * 1000)
+
+        for it in [it for it in subset if it["uid"] not in done]:
+            rec = {"uid": it["uid"]}
+            # ours, truly live: generate -> probe halts at </hopK> -> retrieve -> flush -> restart
+            t = time.perf_counter()
+            g = generate_monitored(model, tok, it["prompt"], probes, halt=True,
+                                   max_new_tokens=args.max_new_tokens, keep_pooled=False)
+            k = g["stopped_at"]
+            rs = seq_restart(it, f"{it['question']} {hop_text(g['text'], k)}") if k else None
+            rec["probe_restart"] = dict(stopped_at=k, first_pass_text=g["text"], first_pass_n_gen=g["n_gen"],
+                                        answer=rs["answer"] if rs else g["answer"], restart=rs,
+                                        wall_ms=(time.perf_counter() - t) * 1000)
+            rec["always_retrieve"] = seq_restart(it, it["question"])
+            jk = judge_trigger(j_all.get(it["uid"]))
+            if jk:
+                rec["judge_restart"] = seq_restart(it, f"{it['question']} {s0_all[it['uid']]['hop_text'][str(jk)]}")
+            append_jsonl(l_path, rec)
+        print(f"[live] {len(read_jsonl(l_path))} items in latency subset")
+
+    # ── parity: live features vs stored Phase 1 features ─────────────────────
+    if "parity" in stages:
+        import torch
+        from src.pipeline.probes import ProbeBundle
+        pb = probes or ProbeBundle(probe_dir)
+        repro = [it for it in items if it["dataset"] == "2wiki" and s0_all.get(it["uid"], {}).get("reproduced")]
+        repro = repro[:200]
+        res = dict(n_2wiki_s0=sum(1 for it in items if it["dataset"] == "2wiki" and it["uid"] in s0_all),
+                   n_reproduced=sum(1 for it in items if s0_all.get(it["uid"], {}).get("reproduced")), rows=[])
+        if repro:
+            hs_dir = download_hidden_states(args.setting, [it["id"] for it in repro])
+            ex_by_id = {e["id"]: e for e in load_setting_examples(args.setting)}
+            for it in repro:
+                f = out / "s0_feats" / f"{safe(it['uid'])}.npz"
+                if not f.exists():
+                    continue
+                live = np.load(f)
+                stored = torch.load(hs_dir / f"{it['id']}.pt", map_location="cpu", weights_only=False)["pooled"]
+                order = [h["hop_idx"] for h in ex_by_id[it["id"]]["hop_spans"]]
+                for k in (1, 2):
+                    if f"h{k}" not in live.files or k not in order:
+                        continue
+                    a = live[f"h{k}"].astype(np.float32)
+                    b = stored[:, order.index(k)].float().numpy()
+                    cos = (a * b).sum(1) / (np.linalg.norm(a, axis=1) * np.linalg.norm(b, axis=1) + 1e-9)
+                    L = pb.layer[k]
+                    res["rows"].append(dict(uid=it["uid"], hop=k, cos_probe_layer=float(cos[L]),
+                                            cos_min=float(cos.min()), p_live=pb.p_fail(k, live[f"h{k}"]),
+                                            p_stored=pb.p_fail(k, b.astype(np.float16))))
+        (out / "parity.json").write_text(json.dumps(res, indent=1))
+        if res["rows"]:
+            dp = np.array([abs(r["p_live"] - r["p_stored"]) for r in res["rows"]])
+            print(f"[parity] {len(res['rows'])} hops: mean cos@probe layer "
+                  f"{np.mean([r['cos_probe_layer'] for r in res['rows']]):.5f}, |Δp| mean {dp.mean():.4f} max {dp.max():.4f}")
+        print(f"[parity] reproduced Phase 1 trajectory exactly: {res['n_reproduced']}/{res['n_2wiki_s0']}")
+
+    # ── evaluate ─────────────────────────────────────────────────────────────
+    if "evaluate" in stages:
+        from src.pipeline.evaluate import evaluate
+        evaluate(out, probe_dir)
+
+
+if __name__ == "__main__":
+    main()

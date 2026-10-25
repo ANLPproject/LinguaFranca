@@ -1,0 +1,115 @@
+"""
+src/pipeline/retriever.py
+─────────────────────────
+Second-stage retriever used by every restart: all-MiniLM-L6-v2 embeddings
+in a FAISS inner-product index (cosine on normalised vectors) over a pooled
+Wikipedia-paragraph corpus:
+
+  * all 10 paragraphs of every question in the setting's dataset
+    (so a gold passage the first-stage TF-IDF retriever dropped is findable),
+  * all 10 paragraphs of every HotpotQA evaluation question,
+  * all paragraphs of `n_extra` further random 2Wiki train questions
+    (hard same-distribution distractors).
+
+Paragraphs are de-duplicated by title.
+"""
+
+from __future__ import annotations
+
+import json
+import random
+import time
+from pathlib import Path
+
+import numpy as np
+
+from src.pipeline.common import RAW_2WIKI_FILE, hf_file, raw_passages
+
+EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+
+
+def build_corpus(dataset_ids: set[str], hotpot_records: list[dict], n_extra: int = 20000,
+                 seed: int = 42, raw_path: str | None = None) -> list[dict]:
+    raw_path = raw_path or hf_file(RAW_2WIKI_FILE)
+    rng = random.Random(seed)
+    seen, corpus = set(), []
+
+    def add(passages, source):
+        for p in passages:
+            if p["title"] and p["title"] not in seen and p["text"].strip():
+                seen.add(p["title"])
+                corpus.append(dict(title=p["title"], text=p["text"], source=source))
+
+    extra_pool, n_other, n_hit = [], 0, 0
+    with open(raw_path, encoding="utf-8") as f:
+        for line in f:
+            rec = json.loads(line)
+            rid = rec.get("_id") or rec.get("id")
+            if rid in dataset_ids:
+                add(raw_passages(rec), "2wiki_dataset")
+                n_hit += 1
+                continue
+            # uniform reservoir sample of the other questions
+            if n_other < n_extra:
+                extra_pool.append(rec)
+            else:
+                j = rng.randint(0, n_other)
+                if j < n_extra:
+                    extra_pool[j] = rec
+            n_other += 1
+    for rec in hotpot_records:
+        add(rec["all_passages"], "hotpotqa")
+    for rec in extra_pool:
+        add(raw_passages(rec), "2wiki_extra")
+    print(f"[corpus] {len(corpus)} unique paragraphs (dataset questions found in raw file: {n_hit}/{len(dataset_ids)})")
+    return corpus
+
+
+class DenseRetriever:
+    def __init__(self, passages: list[dict], embeddings: np.ndarray | None = None, device: str | None = None):
+        from sentence_transformers import SentenceTransformer
+        self.passages = passages
+        self.encoder = SentenceTransformer(EMBED_MODEL, device=device)
+        if embeddings is None:
+            t0 = time.time()
+            embeddings = self.encoder.encode([f"{p['title']}: {p['text']}" for p in passages], batch_size=256,
+                                             convert_to_numpy=True, normalize_embeddings=True,
+                                             show_progress_bar=True).astype(np.float32)
+            print(f"[retriever] embedded {len(passages)} paragraphs in {time.time() - t0:.0f}s")
+        self.emb = embeddings
+        try:
+            import faiss
+            self.index = faiss.IndexFlatIP(embeddings.shape[1])
+            self.index.add(embeddings)
+        except ImportError:
+            print("[retriever] faiss not installed -> exact numpy search (same results)")
+            self.index = None
+
+    def save(self, d) -> None:
+        d = Path(d)
+        d.mkdir(parents=True, exist_ok=True)
+        np.save(d / "embeddings.npy", self.emb)
+        with open(d / "passages.jsonl", "w", encoding="utf-8") as f:
+            for p in self.passages:
+                f.write(json.dumps(p, ensure_ascii=False) + "\n")
+
+    @classmethod
+    def load(cls, d, device: str | None = None) -> "DenseRetriever":
+        d = Path(d)
+        with open(d / "passages.jsonl", encoding="utf-8") as f:
+            passages = [json.loads(l) for l in f]
+        return cls(passages, np.load(d / "embeddings.npy"), device)
+
+    def search(self, query: str, k: int = 3, exclude_titles=()) -> tuple[list[dict], float]:
+        """Top-k passages not already in the context.  Returns (passages, latency_ms)."""
+        t0 = time.perf_counter()
+        q = self.encoder.encode([query], convert_to_numpy=True, normalize_embeddings=True).astype(np.float32)
+        excl = set(exclude_titles)
+        n = k + len(excl) + 5
+        if self.index is not None:
+            _, idx = self.index.search(q, n)
+            idx = idx[0]
+        else:
+            idx = np.argsort(-(self.emb @ q[0]))[:n]
+        hits = [self.passages[i] for i in idx if i >= 0 and self.passages[i]["title"] not in excl][:k]
+        return hits, (time.perf_counter() - t0) * 1000
