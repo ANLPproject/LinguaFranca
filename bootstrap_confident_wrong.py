@@ -1,106 +1,70 @@
-import json
-import torch
-import numpy as np
-from sklearn.model_selection import GroupShuffleSplit
-from sklearn.linear_model import LogisticRegression
-from sklearn.preprocessing import StandardScaler
-from sklearn.pipeline import make_pipeline
-from pathlib import Path
-import sys
+"""
+bootstrap_confident_wrong.py  (v2)
+──────────────────────────────────
+Split-stability check for the hop-1 probe: repeat the grouped 80/20 split with
+several seeds, retrain, and report mean ± std of AUROC, recall on confident
+(non-hedging) failures, recall on natural failures, and FPR.
 
-def run_bootstrap(labels_file, hs_dir):
-    hs_dir = Path(hs_dir)
-    print(f"[*] Loading dataset from {labels_file}...")
-    with open(labels_file, encoding='utf-8') as f:
-        examples = [json.loads(l) for l in f]
-        
-    valid_ex = [ex for ex in examples if (hs_dir / f"{ex['id']}.pt").exists()]
-    
-    layer_indices = range(8, 15)
-    random_states = [42, 43, 44, 45, 46]
-    hedging_keywords = ["no information", "no mention", "not mentioned", "no relevant information", "not found", "cannot find", "does not mention"]
-    
-    print("\n" + "="*80)
-    print("BOOTSTRAP ERROR BARS: CONFIDENTLY WRONG FAILURES (Layers 8-14, 5-Fold)")
-    print("="*80)
-    print(f"{'Layer':<7} | {'Mean Confident Wrong Acc (%)':<30} | {'Std Dev (%)':<12} | {'N (Wrong/Hedge)':<15}")
-    print("-" * 80)
-    
-    for layer_idx in layer_indices:
-        layer_wrong_accs = []
-        n_wrong_list = []
-        n_hedge_list = []
-        
-        for seed in random_states:
-            groups = [ex.get("clean_pair_id", ex["id"]) for ex in valid_ex]
-            gss = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=seed)
-            train_idx, test_idx = next(gss.split(valid_ex, groups=groups))
-            train_ex = [valid_ex[i] for i in train_idx]
-            test_ex = [valid_ex[i] for i in test_idx]
-            
-            # Extract Train
-            X_tr, y_tr = [], []
-            for ex in train_ex:
-                pt_path = hs_dir / f"{ex['id']}.pt"
-                data = torch.load(pt_path)
-                pooled = data['pooled']
-                for hop in ex.get('hops', []):
-                    h_idx = hop['hop_idx'] - 1
-                    if hop.get('label') in (0, 1) and h_idx == 0 and h_idx < pooled.shape[1]:
-                        X_tr.append(pooled[layer_idx, h_idx].detach().numpy())
-                        y_tr.append(hop['label'])
-            
-            X_tr = np.array(X_tr)
-            y_tr = np.array(y_tr)
-            
-            # Train model
-            if len(y_tr) > 0:
-                clf_h1 = make_pipeline(StandardScaler(), LogisticRegression(max_iter=1000, class_weight='balanced', random_state=42))
-                clf_h1.fit(X_tr, y_tr)
-            else:
-                continue
-            
-            # Extract Test
-            X_te, X_te_txt, y_te = [], [], []
-            for ex in test_ex:
-                pt_path = hs_dir / f"{ex['id']}.pt"
-                data = torch.load(pt_path)
-                pooled = data['pooled']
-                for hop in ex.get('hops', []):
-                    h_idx = hop['hop_idx'] - 1
-                    if hop.get('label') in (0, 1) and h_idx == 0 and h_idx < pooled.shape[1]:
-                        X_te.append(pooled[layer_idx, h_idx].detach().numpy())
-                        X_te_txt.append(hop['text'])
-                        y_te.append(hop['label'])
-                        
-            X_te = np.array(X_te)
-            y_te = np.array(y_te)
-            X_te_txt = np.array(X_te_txt)
-            
-            fail_mask = y_te == 1
-            X_fail_hs = X_te[fail_mask]
-            X_fail_text = X_te_txt[fail_mask]
-            y_fail = y_te[fail_mask]
-            
-            y_fail_pred = clf_h1.predict(X_fail_hs)
-            is_hedging = np.array([any(k in t.lower() for k in hedging_keywords) for t in X_fail_text])
-            
-            n_wrong = np.sum(~is_hedging)
-            n_hedge = np.sum(is_hedging)
-            wrong_acc = np.mean(y_fail_pred[~is_hedging] == y_fail[~is_hedging]) if n_wrong > 0 else 0
-            
-            layer_wrong_accs.append(wrong_acc)
-            n_wrong_list.append(n_wrong)
-            n_hedge_list.append(n_hedge)
-            
-        mean_acc = np.mean(layer_wrong_accs) * 100
-        std_acc = np.std(layer_wrong_accs) * 100
-        avg_n_wrong = np.mean(n_wrong_list)
-        avg_n_hedge = np.mean(n_hedge_list)
-        
-        print(f"Layer {layer_idx:<5} | {mean_acc:<30.1f} | ±{std_acc:<10.1f} | ~{int(avg_n_wrong)} / {int(avg_n_hedge)}")
+This is "repeated random sub-sampling", not k-fold CV or a bootstrap; the
+per-split grouped bootstrap CIs are in advanced_probing.py's results.
+
+v1 reported only recall on confident failures (no FPR) — see FIXES_AND_RERUN.md.
+
+Usage
+─────
+  python bootstrap_confident_wrong.py --hs-dir data/hidden_states --layers 8,9,10,11,12,13,14
+"""
+
+from __future__ import annotations
+
+import argparse
+
+import numpy as np
+
+from lf_common import (DEFAULT_DATA, binary_metrics, canonical_split, hop_rows, load_examples, load_hidden,
+                       make_probe, rows_arrays)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("legacy_data", nargs="?", default=None)
+    ap.add_argument("legacy_hs", nargs="?", default=None)
+    ap.add_argument("--data", default=None)
+    ap.add_argument("--hs-dir", default=None)
+    ap.add_argument("--layers", default="8,9,10,11,12,13,14")
+    ap.add_argument("--seeds", default="42,43,44,45,46")
+    args = ap.parse_args()
+    data = args.data or args.legacy_data or DEFAULT_DATA
+    hs_dir = args.hs_dir or args.legacy_hs or "data/hidden_states"
+
+    examples = load_examples(data, hs_dir=hs_dir)
+    rows = hop_rows(examples, hops=(1,))
+    A = rows_arrays(rows)
+    layers = [int(x) for x in args.layers.split(",")]
+    seeds = [int(x) for x in args.seeds.split(",")]
+    X = load_hidden(examples, rows, hs_dir, layers)
+
+    print(f"Hop-1 probe stability over {len(seeds)} grouped 80/20 splits (seeds {seeds})")
+    print(f"{'layer':>5} | {'AUROC':>13} | {'conf-fail recall':>16} | {'natural recall':>14} | {'FPR':>13} | n conf/hedge (test, avg)")
+    for L in layers:
+        rec = {k: [] for k in ("auroc", "conf", "nat", "fpr", "n_conf", "n_hedge")}
+        for s in seeds:
+            tr_idx, _ = canonical_split(examples, seed=s)
+            is_tr = np.zeros(len(examples), bool); is_tr[tr_idx] = True
+            trm = is_tr[A["ei"]]; tem = ~trm
+            clf = make_probe().fit(X[L][trm], A["y"][trm])
+            p = clf.predict_proba(X[L][tem])[:, 1]
+            y = A["y"][tem]; pred = p >= 0.5
+            hedge = A["hedge"][tem]; cf = A["cf"][tem]
+            m = binary_metrics(y, p)
+            rec["auroc"].append(m["auroc"]); rec["fpr"].append(m["fpr"])
+            rec["conf"].append(pred[(y == 1) & ~hedge].mean())
+            rec["nat"].append(pred[(y == 1) & ~cf].mean())
+            rec["n_conf"].append(((y == 1) & ~hedge).sum()); rec["n_hedge"].append(((y == 1) & hedge).sum())
+        f = lambda k: f"{np.mean(rec[k]):.3f}±{np.std(rec[k]):.3f}"
+        print(f"{L:>5} | {f('auroc'):>13} | {f('conf'):>16} | {f('nat'):>14} | {f('fpr'):>13} | "
+              f"~{np.mean(rec['n_conf']):.0f} / {np.mean(rec['n_hedge']):.0f}")
+
 
 if __name__ == "__main__":
-    labels_file = sys.argv[1] if len(sys.argv) > 1 else "/kaggle/input/2wikimultihopqa-phase2-labels/labeled_dataset.jsonl"
-    hs_dir = sys.argv[2] if len(sys.argv) > 2 else "/kaggle/input/linguafranca-hidden-states/hidden_states"
-    run_bootstrap(labels_file, hs_dir)
+    main()

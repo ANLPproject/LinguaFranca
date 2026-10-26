@@ -1,0 +1,86 @@
+====================================================================================================
+data=data/canonical/augmented_v2.jsonl (sha256 c0458adc3d26c3f7…)  examples=4078  train/test examples=3264/814  rows(hops 1-2)=8156
+  hop1  train: n= 3264  fail=  296 (9.1%)  cf_rows=64  hedging_fails=56
+  hop1  test : n=  814  fail=   68 (8.4%)  cf_rows=14  hedging_fails=13
+  hop2  train: n= 3264  fail= 1365 (41.8%)  cf_rows=64  hedging_fails=25
+  hop2  test : n=  814  fail=  332 (40.8%)  cf_rows=14  hedging_fails=11
+  hop12 train: n= 6528  fail= 1661 (25.4%)  cf_rows=128  hedging_fails=81
+  hop12 test : n= 1628  fail=  400 (24.6%)  cf_rows=28  hedging_fails=24
+
+TEXT-ONLY BASELINES (train split -> test split, all test rows):
+  hop1  majority             acc=0.916  bacc=0.500  auroc=0.500  auprc=0.084  tpr=0.000  fpr=0.000  majority=0.916  n=814
+  hop1  hedge_keyword_rule   acc=0.930  bacc=0.594  auroc=0.594  auprc=0.233  tpr=0.191  fpr=0.003  majority=0.916  n=814
+  hop1  tfidf_text           acc=0.860  bacc=0.783  auroc=0.890  auprc=0.557  tpr=0.691  fpr=0.125  majority=0.916  n=814
+  hop2  majority             acc=0.592  bacc=0.500  auroc=0.500  auprc=0.408  tpr=0.000  fpr=0.000  majority=0.592  n=814
+  hop2  hedge_keyword_rule   acc=0.604  bacc=0.516  auroc=0.516  auprc=0.425  tpr=0.033  fpr=0.002  majority=0.592  n=814
+  hop2  tfidf_text           acc=0.677  bacc=0.674  auroc=0.723  auprc=0.642  tpr=0.660  fpr=0.311  majority=0.592  n=814
+  hop12 majority             acc=0.754  bacc=0.500  auroc=0.500  auprc=0.246  tpr=0.000  fpr=0.000  majority=0.754  n=1628
+  hop12 hedge_keyword_rule   acc=0.767  bacc=0.529  auroc=0.529  auprc=0.284  tpr=0.060  fpr=0.002  majority=0.754  n=1628
+  hop12 tfidf_text           acc=0.681  bacc=0.692  auroc=0.770  auprc=0.525  tpr=0.715  fpr=0.331  majority=0.754  n=1628
+  hop12 hop_index_only       acc=0.662  bacc=0.719  auroc=0.719  auprc=0.380  tpr=0.830  fpr=0.393  majority=0.754  n=1628
+
+[86s] loaded layers [0, 1, 2, 3, 4, 5]
+[123s] L 0 | hop1 CV(train,natural) auroc=0.831 | hop1 TEST all: acc=0.921  bacc=0.750  auroc=0.833  tpr=0.544  fpr=0.044  n=814 | hop2 TEST auroc=0.739 | hop12 TEST natural auroc=0.781
+[156s] L 1 | hop1 CV(train,natural) auroc=0.851 | hop1 TEST all: acc=0.929  bacc=0.774  auroc=0.841  tpr=0.588  fpr=0.040  n=814 | hop2 TEST auroc=0.746 | hop12 TEST natural auroc=0.784
+[188s] L 2 | hop1 CV(train,natural) auroc=0.878 | hop1 TEST all: acc=0.928  bacc=0.767  auroc=0.863  tpr=0.574  fpr=0.040  n=814 | hop2 TEST auroc=0.792 | hop12 TEST natural auroc=0.818
+[220s] L 3 | hop1 CV(train,natural) auroc=0.887 | hop1 TEST all: acc=0.935  bacc=0.804  auroc=0.879  tpr=0.647  fpr=0.039  n=814 | hop2 TEST auroc=0.833 | hop12 TEST natural auroc=0.843
+[253s] L 4 | hop1 CV(train,natural) auroc=0.891 | hop1 TEST all: acc=0.928  bacc=0.787  auroc=0.887  tpr=0.618  fpr=0.044  n=814 | hop2 TEST auroc=0.844 | hop12 TEST natural auroc=0.845
+[286s] L 5 | hop1 CV(train,natural) auroc=0.927 | hop1 TEST all: acc=0.941  bacc=0.827  auroc=0.911  tpr=0.691  fpr=0.036  n=814 | hop2 TEST auroc=0.873 | hop12 TEST natural auroc=0.880
+
+[304s] loaded layers [6, 7, 8, 9, 10, 11]
+[328s] L 6 | hop1 CV(train,natural) auroc=0.930 | hop1 TEST all: acc=0.946  bacc=0.844  auroc=0.925  tpr=0.721  fpr=0.034  n=814 | hop2 TEST auroc=0.885 | hop12 TEST natural auroc=0.898
+[351s] L 7 | hop1 CV(train,natural) auroc=0.934 | hop1 TEST all: acc=0.947  bacc=0.844  auroc=0.914  tpr=0.721  fpr=0.032  n=814 | hop2 TEST auroc=0.910 | hop12 TEST natural auroc=0.912
+[372s] L 8 | hop1 CV(train,natural) auroc=0.949 | hop1 TEST all: acc=0.943  bacc=0.822  auroc=0.930  tpr=0.676  fpr=0.032  n=814 | hop2 TEST auroc=0.940 | hop12 TEST natural auroc=0.942
+[391s] L 9 | hop1 CV(train,natural) auroc=0.959 | hop1 TEST all: acc=0.952  bacc=0.867  auroc=0.954  tpr=0.765  fpr=0.031  n=814 | hop2 TEST auroc=0.940 | hop12 TEST natural auroc=0.944
+[409s] L10 | hop1 CV(train,natural) auroc=0.968 | hop1 TEST all: acc=0.951  bacc=0.860  auroc=0.953  tpr=0.750  fpr=0.031  n=814 | hop2 TEST auroc=0.947 | hop12 TEST natural auroc=0.950
+[426s] L11 | hop1 CV(train,natural) auroc=0.968 | hop1 TEST all: acc=0.956  bacc=0.889  auroc=0.954  tpr=0.809  fpr=0.031  n=814 | hop2 TEST auroc=0.952 | hop12 TEST natural auroc=0.949
+
+[437s] loaded layers [12, 13, 14, 15, 16, 17]
+[456s] L12 | hop1 CV(train,natural) auroc=0.960 | hop1 TEST all: acc=0.950  bacc=0.879  auroc=0.957  tpr=0.794  fpr=0.036  n=814 | hop2 TEST auroc=0.947 | hop12 TEST natural auroc=0.947
+[474s] L13 | hop1 CV(train,natural) auroc=0.966 | hop1 TEST all: acc=0.957  bacc=0.883  auroc=0.959  tpr=0.794  fpr=0.028  n=814 | hop2 TEST auroc=0.949 | hop12 TEST natural auroc=0.952
+[487s] L14 | hop1 CV(train,natural) auroc=0.959 | hop1 TEST all: acc=0.952  bacc=0.874  auroc=0.945  tpr=0.779  fpr=0.032  n=814 | hop2 TEST auroc=0.948 | hop12 TEST natural auroc=0.948
+[502s] L15 | hop1 CV(train,natural) auroc=0.959 | hop1 TEST all: acc=0.946  bacc=0.857  auroc=0.950  tpr=0.750  fpr=0.036  n=814 | hop2 TEST auroc=0.939 | hop12 TEST natural auroc=0.946
+[521s] L16 | hop1 CV(train,natural) auroc=0.953 | hop1 TEST all: acc=0.947  bacc=0.864  auroc=0.950  tpr=0.765  fpr=0.036  n=814 | hop2 TEST auroc=0.946 | hop12 TEST natural auroc=0.957
+[540s] L17 | hop1 CV(train,natural) auroc=0.953 | hop1 TEST all: acc=0.948  bacc=0.865  auroc=0.947  tpr=0.765  fpr=0.035  n=814 | hop2 TEST auroc=0.943 | hop12 TEST natural auroc=0.952
+
+[549s] loaded layers [18, 19, 20, 21, 22, 23]
+[566s] L18 | hop1 CV(train,natural) auroc=0.949 | hop1 TEST all: acc=0.950  bacc=0.866  auroc=0.948  tpr=0.765  fpr=0.034  n=814 | hop2 TEST auroc=0.947 | hop12 TEST natural auroc=0.952
+[583s] L19 | hop1 CV(train,natural) auroc=0.943 | hop1 TEST all: acc=0.953  bacc=0.868  auroc=0.940  tpr=0.765  fpr=0.029  n=814 | hop2 TEST auroc=0.942 | hop12 TEST natural auroc=0.950
+[600s] L20 | hop1 CV(train,natural) auroc=0.944 | hop1 TEST all: acc=0.950  bacc=0.846  auroc=0.953  tpr=0.721  fpr=0.029  n=814 | hop2 TEST auroc=0.942 | hop12 TEST natural auroc=0.948
+[616s] L21 | hop1 CV(train,natural) auroc=0.940 | hop1 TEST all: acc=0.947  bacc=0.831  auroc=0.948  tpr=0.691  fpr=0.029  n=814 | hop2 TEST auroc=0.941 | hop12 TEST natural auroc=0.942
+[633s] L22 | hop1 CV(train,natural) auroc=0.932 | hop1 TEST all: acc=0.952  bacc=0.854  auroc=0.935  tpr=0.735  fpr=0.028  n=814 | hop2 TEST auroc=0.941 | hop12 TEST natural auroc=0.941
+[646s] L23 | hop1 CV(train,natural) auroc=0.930 | hop1 TEST all: acc=0.953  bacc=0.868  auroc=0.933  tpr=0.765  fpr=0.029  n=814 | hop2 TEST auroc=0.938 | hop12 TEST natural auroc=0.936
+
+[659s] loaded layers [24, 25, 26, 27]
+[671s] L24 | hop1 CV(train,natural) auroc=0.922 | hop1 TEST all: acc=0.952  bacc=0.854  auroc=0.934  tpr=0.735  fpr=0.028  n=814 | hop2 TEST auroc=0.935 | hop12 TEST natural auroc=0.933
+[687s] L25 | hop1 CV(train,natural) auroc=0.917 | hop1 TEST all: acc=0.950  bacc=0.846  auroc=0.930  tpr=0.721  fpr=0.029  n=814 | hop2 TEST auroc=0.933 | hop12 TEST natural auroc=0.930
+[702s] L26 | hop1 CV(train,natural) auroc=0.911 | hop1 TEST all: acc=0.952  bacc=0.854  auroc=0.929  tpr=0.735  fpr=0.028  n=814 | hop2 TEST auroc=0.925 | hop12 TEST natural auroc=0.923
+[720s] L27 | hop1 CV(train,natural) auroc=0.885 | hop1 TEST all: acc=0.943  bacc=0.815  auroc=0.920  tpr=0.662  fpr=0.031  n=814 | hop2 TEST auroc=0.918 | hop12 TEST natural auroc=0.916
+
+====================================================================================================
+SELECTED LAYERS (by 5-fold CV AUROC on the TRAIN split, natural rows): {'hop1': 10, 'hop2': 13, 'hop12': 13}
+
+[hop1] layer 10 — HELD-OUT TEST
+  all      acc=0.951  bacc=0.860  auroc=0.953  auprc=0.806  tpr=0.750  fpr=0.031  majority=0.916  n=814  auroc95%=[0.918,0.980]  bacc95%=[0.807,0.908]  tpr95%=[0.642,0.846]  fpr95%=[0.019,0.044]
+  natural  acc=0.950  bacc=0.827  auroc=0.942  auprc=0.721  tpr=0.685  fpr=0.031  majority=0.932  n=800  auroc95%=[0.895,0.974]  bacc95%=[0.765,0.883]  tpr95%=[0.562,0.796]  fpr95%=[0.019,0.044]
+  cf       acc=1.000  bacc=nan  auroc=n/a  auprc=n/a  tpr=1.000  fpr=nan  majority=1.000  n=14  
+  shuffled-label control: acc=0.819  bacc=0.521  auroc=0.471  n=814
+
+[hop2] layer 13 — HELD-OUT TEST
+  all      acc=0.899  bacc=0.896  auroc=0.949  auprc=0.935  tpr=0.880  fpr=0.087  majority=0.592  n=814  auroc95%=[0.933,0.963]  bacc95%=[0.875,0.917]  tpr95%=[0.842,0.913]  fpr95%=[0.063,0.112]
+  natural  acc=0.897  bacc=0.894  auroc=0.947  auprc=0.930  tpr=0.875  fpr=0.087  majority=0.601  n=800  auroc95%=[0.930,0.962]  bacc95%=[0.871,0.915]  tpr95%=[0.835,0.909]  fpr95%=[0.063,0.112]
+  cf       acc=1.000  bacc=1.000  auroc=1.000  auprc=1.000  tpr=1.000  fpr=0.000  majority=0.929  n=14  
+  shuffled-label control: acc=0.489  bacc=0.476  auroc=0.471  n=814
+
+[hop12] layer 13 — HELD-OUT TEST
+  all      acc=0.909  bacc=0.887  auroc=0.956  auprc=0.896  tpr=0.845  fpr=0.070  majority=0.754  n=1628  auroc95%=[0.943,0.966]  bacc95%=[0.866,0.907]  tpr95%=[0.804,0.879]  fpr95%=[0.056,0.085]
+  natural  acc=0.907  bacc=0.882  auroc=0.952  auprc=0.880  tpr=0.834  fpr=0.070  majority=0.767  n=1600  auroc95%=[0.939,0.964]  bacc95%=[0.859,0.902]  tpr95%=[0.790,0.871]  fpr95%=[0.056,0.085]
+  cf       acc=1.000  bacc=1.000  auroc=1.000  auprc=1.000  tpr=1.000  fpr=0.000  majority=0.964  n=28  
+  shuffled-label control: acc=0.592  bacc=0.517  auroc=0.507  n=1628
+
+[hop1] failure breakdown at layer 10 (recall at threshold 0.5; value, n):
+  breakdown_cv_train: hedge_recall=1.000(n=56)  confident_recall=0.762(n=240)  natural_fail_recall=0.767(n=232)  cf_fail_recall=0.953(n=64)  fpr_on_successes=0.022(n=2968)
+  breakdown_test: hedge_recall=1.000(n=13)  confident_recall=0.691(n=55)  natural_fail_recall=0.685(n=54)  cf_fail_recall=1.000(n=14)  fpr_on_successes=0.031(n=746)
+  hop-1 score -> wrong final answer (test): {'probe_auroc': 0.5863662502684763, 'gold_hop1_label_auroc': 0.5597715006270222}
+
+[done in 1006s] outputs in outputs\probing/ : results.json, results.md, test_predictions.csv, qualitative_hop1.md, probes/*.joblib
