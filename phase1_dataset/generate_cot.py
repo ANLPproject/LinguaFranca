@@ -48,7 +48,33 @@ import yaml
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+import numpy as np
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+
 logger = logging.getLogger(__name__)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TF-IDF passage ranker  (used inside _normalise to simulate weak retrieval)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _tfidf_rank(question: str, passage_texts: list, top_k: int) -> list:
+    """
+    Rank passage_texts by TF-IDF cosine similarity to `question`.
+    Returns a list of indices (length min(top_k, len(passages))),
+    sorted descending by score.
+    """
+    if not passage_texts:
+        return []
+    try:
+        vec = TfidfVectorizer(stop_words="english")
+        mat = vec.fit_transform(passage_texts + [question])
+        scores = cosine_similarity(mat[-1], mat[:-1])[0]
+        return np.argsort(scores)[::-1][:top_k].tolist()
+    except ValueError:
+        # Degenerate vocabulary (e.g. all stop-words) — fall back to first k
+        return list(range(min(top_k, len(passage_texts))))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -405,26 +431,42 @@ def run_generation(cfg: dict, dry_run: bool = False) -> Path:
         """
         evidences = rec.get("evidences", [])
         graph = []
-        for i, ev in enumerate(evidences):
-            if hasattr(ev, '__len__') and not isinstance(ev, (str, dict)) and len(ev) >= 3:
-                gold_ent = ev[2]
-            elif hasattr(ev, 'get'):
-                gold_ent = ev.get("val") or ev.get("object") or ev.get("value") or ""
-            else:
-                gold_ent = ""
-            graph.append({"hop": i + 1, "gold_entity": gold_ent})
+        if isinstance(evidences, dict):
+            vals = evidences.get("value") or evidences.get("val") or evidences.get("object") or []
+            for i, val in enumerate(vals):
+                graph.append({"hop": i + 1, "gold_entity": str(val)})
+        elif isinstance(evidences, (list, tuple)):
+            for i, ev in enumerate(evidences):
+                if hasattr(ev, '__len__') and not isinstance(ev, (str, dict)) and len(ev) >= 3:
+                    gold_ent = ev[2]
+                elif hasattr(ev, 'get'):
+                    gold_ent = ev.get("val") or ev.get("object") or ev.get("value") or ""
+                else:
+                    gold_ent = ""
+                graph.append({"hop": i + 1, "gold_entity": str(gold_ent)})
 
-        # supporting_facts: [[title, sent_id], ...] or [{"title": ..., "sent_id": ...}, ...]
-        def _sf_title(sf):
-            if hasattr(sf, '__len__') and not isinstance(sf, (str, dict)):
-                return sf[0] if len(sf) > 0 else ""
-            elif hasattr(sf, 'get'):
-                return sf.get("title") or sf.get("key") or ""
-            return ""
+        # supporting_facts can be:
+        # 1. HuggingFace columnar dict: {"title": [...], "sent_id": [...]}
+        # 2. list-of-lists: [[title, sent_id], ...]
+        # 3. list-of-dicts: [{"title": ..., "sent_id": ...}, ...]
+        sfs = rec.get("supporting_facts", [])
+        gold_titles = set()
+        if isinstance(sfs, dict):
+            for t in sfs.get("title", []):
+                if t:
+                    gold_titles.add(t)
+        elif isinstance(sfs, (list, tuple)):
+            for sf in sfs:
+                if isinstance(sf, (list, tuple)):
+                    t = sf[0] if sf else ""
+                elif isinstance(sf, dict):
+                    t = sf.get("title", sf.get("key", ""))
+                else:
+                    t = ""
+                if t:
+                    gold_titles.add(t)
 
-        gold_titles = {_sf_title(sf) for sf in rec.get("supporting_facts", [])} - {""}
-
-        # Handle Hugging Face columnar dictionary format
+        # Handle Hugging Face columnar dictionary format for context
         ctx_obj = rec.get("context", [])
         if isinstance(ctx_obj, dict):
             titles = ctx_obj.get("title", [])
@@ -433,52 +475,147 @@ def run_generation(cfg: dict, dry_run: bool = False) -> Path:
         else:
             context_list = ctx_obj
             
-        # Filter context to only gold supporting-fact passages.
-        # We now correctly handle the HF columnar dict format, so this works.
-        # Fallback to first 4 paragraphs if gold_titles is empty (malformed record).
-        gold_context = ""
-        matched_titles = set()
+        # ── Parse all candidate passages into (title, text) pairs ────────────
+        all_passages = []   # list of {"title": str, "text": str}
         for ctx in context_list:
             if isinstance(ctx, (list, tuple)):
-                t = ctx[0] if ctx else ""
+                t     = ctx[0] if ctx else ""
                 sents = ctx[1] if len(ctx) > 1 else []
             elif isinstance(ctx, dict):
-                t = ctx.get("title") or ctx.get("key") or ""
+                t     = ctx.get("title") or ctx.get("key") or ""
                 sents = ctx.get("sentences") or ctx.get("value") or []
             else:
                 continue
-
-            if gold_titles and t not in gold_titles:
-                continue   # skip distractor passages
-
             if isinstance(sents, (list, tuple)):
                 sents = " ".join(str(s) for s in sents)
-            gold_context += f"Title: {t}\n{sents}\n\n"
-            matched_titles.add(t)
+            all_passages.append({"title": t, "text": str(sents)})
 
-        # Fallback: if gold_titles filtering gave nothing (empty record), use first 4
-        if not gold_context.strip():
-            for ctx in context_list[:4]:
-                if isinstance(ctx, (list, tuple)):
-                    t = ctx[0] if ctx else ""
-                    sents = ctx[1] if len(ctx) > 1 else []
-                elif isinstance(ctx, dict):
-                    t = ctx.get("title") or ctx.get("key") or ""
-                    sents = ctx.get("sentences") or ctx.get("value") or []
-                else:
-                    continue
-                if isinstance(sents, (list, tuple)):
-                    sents = " ".join(str(s) for s in sents)
-                gold_context += f"Title: {t}\n{sents}\n\n"
+        # ── Retrieval mode ────────────────────────────────────────────────────
+        # use_distractor_context=False → legacy gold-only (ablation baseline)
+        # use_distractor_context=True  → TF-IDF top-K retrieval (RAG simulation)
+        use_distractor = cfg.get("data", {}).get("use_distractor_context", True)
+        top_k          = cfg.get("data", {}).get("retriever_top_k", 5)
+        question_text  = rec["question"]
+
+        if not use_distractor:
+            # Gold-only ablation: always give the model the correct passages
+            selected = [p for p in all_passages if p["title"] in gold_titles]
+            if not selected:
+                selected = all_passages[:4]
+            retrieved_titles = [p["title"] for p in selected]
+        else:
+            # TF-IDF retrieval: rank all candidates by question similarity
+            texts = [p["text"] for p in all_passages]
+            top_idx = _tfidf_rank(question_text, texts, top_k=top_k)
+            if not top_idx:
+                top_idx = list(range(min(top_k, len(all_passages))))
+            selected = [all_passages[i] for i in top_idx]
+            retrieved_titles = [p["title"] for p in selected]
+
+        # ── Build context string from selected passages ────────────────────────
+        full_context = "".join(
+            f"Title: {p['title']}\n{p['text']}\n\n" for p in selected
+        ).strip()
+
+        # Fallback: if context is empty (malformed record), use first 4 passages
+        if not full_context and all_passages:
+            full_context = "".join(
+                f"Title: {p['title']}\n{p['text']}\n\n"
+                for p in all_passages[:4]
+            ).strip()
+            retrieved_titles = [p["title"] for p in all_passages[:4]]
+
+        # ── Compute retrieval condition for probe analysis ─────────────────────
+        # Determine hop order: the gold title that appears in the question text
+        # is the entry entity (hop-1 passage). The other is hop-2.
+        # Fallback: use the subject of evidences[0] to determine which title is hop-1.
+        gold_set = set(gold_titles)
+        retrieved_set = set(retrieved_titles)
+        question_lower = question_text.lower()
+
+        hop1_title = None
+        hop2_title = None
+        for t in gold_set:
+            if t.lower() in question_lower:
+                hop1_title = t
+                break
+
+        if hop1_title is None:
+            # Fallback: evidences[0][0] is the subject of the first triple (hop-1 entity)
+            evidences = rec.get("evidences", [])
+            ev0_subject = None
+            if isinstance(evidences, dict):
+                subj_list = evidences.get("subject") or evidences.get("sub") or []
+                ev0_subject = subj_list[0] if subj_list else None
+            elif isinstance(evidences, (list, tuple)) and evidences:
+                ev0 = evidences[0]
+                if isinstance(ev0, (list, tuple)) and ev0:
+                    ev0_subject = str(ev0[0])
+                elif isinstance(ev0, dict):
+                    ev0_subject = ev0.get("subject") or ev0.get("sub") or ev0.get("page") or None
+            if ev0_subject:
+                # Match ev0_subject to one of the gold titles (case-insensitive prefix)
+                ev0_lower = ev0_subject.lower()
+                for t in gold_set:
+                    if t.lower() == ev0_lower or t.lower().startswith(ev0_lower) or ev0_lower.startswith(t.lower()):
+                        hop1_title = t
+                        break
+
+        # If still unresolved, fall back to alphabetical (same as before)
+        if hop1_title is None:
+            gold_list = sorted(gold_set)
+            hop1_title = gold_list[0] if gold_list else None
+
+        remaining = [t for t in gold_set if t != hop1_title]
+        hop2_title = remaining[0] if remaining else None
+
+        g1_hit = (hop1_title in retrieved_set) if hop1_title else None
+        g2_hit = (hop2_title in retrieved_set) if hop2_title else None
+
+        if g1_hit and g2_hit:
+            retrieval_condition = "both_present"
+        elif g1_hit and not g2_hit:
+            retrieval_condition = "only_hop1_passage"
+        elif not g1_hit and g2_hit:
+            retrieval_condition = "only_hop2_passage"
+        elif g1_hit is None:
+            retrieval_condition = "unknown"
+        else:
+            retrieval_condition = "neither"
+
+        # Check presence of gold bridging entities and gold answer in retrieved context
+        context_lower = full_context.lower()
+        for node in graph:
+            ge = node.get("gold_entity", "")
+            node["in_context"] = bool(ge and ge.lower() in context_lower)
+
+        gold_entities_in_context = [node.get("in_context", False) for node in graph]
+        gold_ans = str(rec.get("answer", ""))
+        gold_answer_in_context = bool(gold_ans and gold_ans.lower() in context_lower)
+
+        # Store gold titles in hop order (hop-1 first, hop-2 second)
+        gold_titles_ordered = ([hop1_title] if hop1_title else []) + ([hop2_title] if hop2_title else [])
 
         return {
-            "id":             rec.get("_id") or rec.get("id") or rec.get("qid") or f"unknown_{uuid.uuid4().hex[:8]}",
-            "source":         "2wikimultihopqa",
-            "question":       rec["question"],
-            "context":        gold_context.strip(),
-            "gold_answer":    rec["answer"],
-            "reasoning_graph": graph,
-            "raw":            rec,
+            "id":                       rec.get("_id") or rec.get("id") or rec.get("qid") or f"unknown_{uuid.uuid4().hex[:8]}",
+            "source":                   "2wikimultihopqa",
+            "question":                 question_text,
+            "context":                  full_context,
+            # Ground-truth supporting passage titles in hop order (hop-1 first)
+            "gold_titles":              gold_titles_ordered,
+            # Which passages TF-IDF actually retrieved (top-K)
+            "retrieved_titles":         retrieved_titles,
+            # Retrieval condition: both_present / only_hop1_passage / only_hop2_passage / neither
+            "retrieval_condition":      retrieval_condition,
+            # Passage-level hit flags (hop-order aware)
+            "gold_hop1_retrieved":      g1_hit,
+            "gold_hop2_retrieved":      g2_hit,
+            # Entity-level hit flags in retrieved context
+            "gold_entities_in_context": gold_entities_in_context,
+            "gold_answer_in_context":   gold_answer_in_context,
+            "gold_answer":              gold_ans,
+            "reasoning_graph":          graph,
+            "raw":                      rec,
         }
 
     examples = [_normalise(r) for r in sampled]
@@ -563,14 +700,44 @@ def run_generation(cfg: dict, dry_run: bool = False) -> Path:
                         exist_ok=True
                     )
                     
+                    hf_revision = os.environ.get("HF_REVISION", "main")
+                    if hf_revision and hf_revision != "main":
+                        try:
+                            api.create_branch(
+                                repo_id=os.environ.get("HF_REPO_ID"),
+                                branch=hf_revision,
+                                repo_type="dataset",
+                                exist_ok=True
+                            )
+                        except Exception as be:
+                            logger.debug("HF branch create/check: %s", be)
+
+                    is_distractor = cfg.get("data", {}).get("use_distractor_context", True)
+                    mode_label = "Distractors" if is_distractor else "Gold-only"
+                    subfolder = os.environ.get("HF_SUBFOLDER", "distractor_rag" if is_distractor else "")
+                    prefix = f"{subfolder}/" if subfolder else ""
+                    
+                    repo_file_path = os.environ.get("HF_PATH_IN_REPO", f"{prefix}data/raw/2wikimultihopqa/generated_cot.jsonl")
                     api.upload_file(
                         path_or_fileobj=str(out_path),
-                        path_in_repo="2wikimultihopqa/generated_cot.jsonl",
+                        path_in_repo=repo_file_path,
                         repo_id=os.environ.get("HF_REPO_ID"),
+                        revision=hf_revision,
                         repo_type="dataset",
-                        commit_message=f"Checkpoint: {min(i + chunk_size, len(examples_to_run))} examples processed"
+                        commit_message=f"Checkpoint ({mode_label}): {min(i + chunk_size, len(examples_to_run))} examples processed"
                     )
-                    logger.info("Successfully uploaded checkpoint to HF: %s", os.environ.get("HF_REPO_ID"))
+                    
+                    # Also checkpoint newly extracted hidden states so crashes don't lose .pt files
+                    if cfg["hidden_states"].get("extract", True) and hs_dir.exists():
+                        api.upload_folder(
+                            folder_path=str(hs_dir),
+                            path_in_repo=f"{prefix}data/hidden_states",
+                            repo_id=os.environ.get("HF_REPO_ID"),
+                            revision=hf_revision,
+                            repo_type="dataset",
+                            commit_message=f"Checkpoint HS ({mode_label}): {min(i + chunk_size, len(examples_to_run))} examples"
+                        )
+                    logger.info("Successfully uploaded checkpoint to HF: %s [%s] (%s)", os.environ.get("HF_REPO_ID"), hf_revision, repo_file_path)
                 except Exception as e:
                     logger.warning("Failed to upload checkpoint to HF: %s", e)
                     

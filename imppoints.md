@@ -143,3 +143,12 @@ Source: `outputs/pipeline/tfidf/results.md` (full Kaggle run, 500 held-out 2Wiki
 
 ## 9. Positioning vs Doctor-RAG
 Doctor-RAG reports 81.3 % diagnosis accuracy with a distilled, fine-tuned diagnoser on its own benchmark; that figure is not directly comparable to ours (different data, labels and granularity). The defensible claims are the matched comparisons: (i) on identical rows, hidden-state probes detect hop failures far better than off-the-shelf text judges up to 8B (§6: AUROC 0.96 vs ≤ 0.72); (ii) used as a live repair trigger with the same retrieval and restart, the probe is at least as accurate as the post-hoc judge in domain and better out of domain, while detecting failures ~3× earlier at ~40 % lower token cost (§8).
+
+## 10. Report checklist (from Anish, `experiment/distractor-rag`) — where each item stands
+1. Data-imbalance numbers — §1 (class balance) and the TF-IDF setting's hop-1 / hop-2 failure rates in §8.
+2. Counterfactuals: how and why — §1 (78 CFs, entity-not-in-context stratum).
+3. MLP vs logistic regression vs SVM — not in the v2 numbers; the old comparison script is in `legacy/generate_report_stats.py` (old labels — rerun before using).
+4. Doctor-RAG with a fine-tuned diagnoser (~80 %) — not reproduced; see §9 for how to position it.
+5. Inference savings vs Doctor-RAG — §8 (3.1× earlier detection, 40 % fewer tokens, 25 % lower latency).
+6. "Internal doubt" on the timeline — §8: the probe flags at ~54 generated tokens vs ~168 for the judge.
+7. Probe accuracy on hedging vs confident failures — §3.

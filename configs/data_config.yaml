@@ -20,19 +20,27 @@ data:
     val:   0.20
     test:  0.20
 
+  # ── RAG Distractor Setting ───────────────────────────────────────────────
+  # use_distractor_context: true  (RECOMMENDED)
+  #   Include ALL 10 passages per question (2 gold + 8 distractors), exactly
+  #   as a real RAG pipeline would return them.  The model must locate the
+  #   supporting passages among noise — this is what creates RAG failures and
+  #   lets the probe learn to detect them.  Required for Phase 3 intervention.
+  #
+  # use_distractor_context: false
+  #   Legacy / ablation mode.  Only gold passages are shown, so the model
+  #   almost never fails due to retrieval noise.  Useful ONLY for sanity
+  #   checks or to compare distractor vs. gold-only probe accuracy.
+  use_distractor_context: true
+
+  # How many passages TF-IDF returns per question (top-K).
+  # Measured recall@5 on 2WikiMultihopQA: both_present=49.4%, miss_rate=50.6%.
+  # Recall@3 would be harder; recall@7 softer. K=5 is the measured default.
+  retriever_top_k: 5
+
   # How many examples to sample from 2WikiMultihopQA BEFORE augmentation.
   # After counterfactual augmentation the final count will be higher.
-  #
-  # LAYER SELECTION WORKFLOW (practical 3-step):
-  #   Step 1 — Set n_source_examples: 200 and layers: "all", then run.
-  #             This is the cheap pilot (36 layers x 200 examples ≈ trivial cost).
-  #   Step 2 — Run phase2_probing to train a quick linear probe per layer on
-  #             the pilot output. Plot accuracy vs layer depth to find the
-  #             informative range (usually a clear peak in the middle layers).
-  #   Step 3 — Lock the 5-8 best layers (e.g. [8,12,16,20,24,28]) into the
-  #             layers list below, bump n_source_examples back to 8000, and
-  #             re-run.  Storage and runtime drop by ~6-7x.
-  n_source_examples: 2000   # Set to 2000 for your main run
+  n_source_examples: 4000   # 4000 examples for robust RAG probe training and evaluation
 
   # dataset_offset (optional, default 0): skip this many compositional examples
   # of the shuffled pool.  The released 4,000-example dataset was generated in
