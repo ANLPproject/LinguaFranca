@@ -88,7 +88,7 @@ Train-split CV AUROC peaks in the middle of the network (hop 1: 0.943 at layer 1
 
 ## Limitations (Phases 3–5)
 
-- **Baseline strength.** Our Doctor-RAG-style judge uses the same untuned 3B model. Doctor-RAG itself relies on a fine-tuned diagnosis model, so our baseline is a matched-compute approximation, not a reproduction.
+- **Baseline strength.** Our Doctor-RAG-style judge is the same 3B model, zero-shot: it reuses the prompt of our standalone judge baseline, whereas the proposal specified a few-shot prompt. Doctor-RAG itself relies on a fine-tuned diagnosis model, so our baseline is a matched-compute approximation, not a reproduction. The probe is trained on our hop labels and the judge is not, so the comparison measures a trained internal signal against an off-the-shelf text signal.
 - **Restart rate.** The calibrated hop-2 probe has a 14.5% false-alarm rate, and 61% of questions are restarted. On HotpotQA the probe trigger breaks 25 correct answers (judge: 10). A cost-sensitive τ is a natural extension; the threshold sweep (`sweep.png`) shows the accuracy/cost trade-off.
 - **Accuracy vs. judge on 2Wiki** is not significantly different. The in-domain advantages are detection quality, earliness and cost.
 - **Labels.** Hop labels are gold-entity presence checks. A hop can be counted as failing although its reasoning is sound but phrased without the entity, and vice versa.
