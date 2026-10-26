@@ -177,6 +177,52 @@ def hop_text(text: str, k: int) -> str:
     return m.group(1).strip() if m else ""
 
 
+_CAPS_RE = re.compile(r"\b[A-Z][\w'’.-]*(?:\s+(?:of|de|da|von|van|the|del|la|[A-Z][\w'’.-]*))*")
+
+
+def bridge_entity(hop1: str) -> str:
+    """
+    The entity a hop-1 step resolves to, e.g. "… the director of film X is Arcady Boytler." -> "Arcady Boytler".
+    Takes what follows the last " is / was / are / were "; falls back to the last capitalised phrase.
+    Returns "" for hedging steps ("there is no information about …").
+    """
+    t = (hop1 or "").strip()
+    if not t or is_hedge(t):
+        return ""
+    t = re.sub(r"^From the context, I find that\s+", "", t)
+    parts = re.split(r"\s(?:is|was|are|were)\s", t)
+    tail = parts[-1] if len(parts) > 1 else ""
+    if re.match(r"(?:the|a|an)\s", tail):                      # "X is the director of Y": X is the entity
+        head = re.split(r"\s(?:is|was|are|were)\s", t)[0]
+        head = re.sub(r"^(?:the\s)?[^A-Z]*", "", head).strip(" ,.")
+        if head and len(head) <= 80:
+            return head
+    tail = re.split(r"[,;(]|\s(?:and|who|which|born)\s", tail)[0].strip().strip(".\"'“”‘’ ")
+    if tail and len(tail) <= 80 and tail[:1].isupper() and tail.split()[0] not in ("American", "British", "German",
+                                                                                  "French", "Italian", "Indian"):
+        return tail
+    caps = [m.group(0).strip(". ") for m in _CAPS_RE.finditer(t) if m.group(0) not in ("From", "I")]
+    return caps[-1] if caps else ""
+
+
+def repair_query(question: str, hops: dict, k: int, repair: str = "v2") -> str:
+    """
+    Retrieval query for a restart triggered at hop k (k = 0: retrieve before generating).
+      v1: question + failing hop text
+      v2: as v1 for hop 1; for hop 2 the hop-1 bridge entity leads the query
+          ("Arcady Boytler. Where was the director of film X born? <hop-2 text>"),
+          because a failing hop-2 step is often a hedge that does not name what to look up.
+    hops: {"1": hop-1 text, "2": hop-2 text}.
+    """
+    if k == 0:
+        return question
+    h = (hops.get(str(k)) or "").strip()
+    if repair == "v2" and k == 2:
+        lead = bridge_entity(hops.get("1", "")) or (hops.get("1") or "").strip()
+        return " ".join(x for x in (f"{lead}." if lead else "", question, h) if x)
+    return f"{question} {h}".strip()
+
+
 def parse_answer(text: str) -> str:
     m = _ANSWER_RE.search(text or "")
     return m.group(1).strip() if m else ""

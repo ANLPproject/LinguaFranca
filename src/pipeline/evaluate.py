@@ -31,12 +31,35 @@ from src.pipeline.systems import judge_trigger, outcome, probe_trigger
 SYSTEMS = ["no_intervention", "probe_restart", "judge_restart", "always_retrieve", "oracle_restart"]
 LABEL = {"no_intervention": "No intervention", "probe_restart": "Probe trigger (ours)",
          "judge_restart": "Judge trigger (Doctor-RAG-style)", "always_retrieve": "Always retrieve",
-         "oracle_restart": "Oracle trigger", "probe_restart_hop12": "Probe trigger, one all-hops probe (ablation)"}
+         "oracle_restart": "Oracle trigger", "probe_restart_hop12": "Probe trigger, one all-hops probe (ablation)",
+         "probe_restart_acc": "Probe trigger, accuracy-optimal τ (2-fold CV)",
+         "probe_restart_2r": "Probe trigger, up to 2 restarts", "judge_restart_2r": "Judge trigger, up to 2 restarts"}
+TAU_GRID = np.round(np.linspace(0, 1, 51), 2)
+
+
+def _fold(uid: str) -> int:
+    import hashlib
+    return int(hashlib.md5(uid.encode()).hexdigest(), 16) % 2
+
+
+def _acc_optimal_tau(arrs: dict) -> tuple[float, float]:
+    """(τ1, τ2) maximising one-round probe-restart accuracy on the given items; ties -> fewer restarts."""
+    c0, c1, c2, p1, p2 = (arrs[k] for k in ("c0", "c1", "c2", "p1", "p2"))
+    best_key, best = None, (1.0, 1.0)
+    for t1 in TAU_GRID:
+        f1 = p1 >= t1
+        for t2 in TAU_GRID:
+            f2 = ~f1 & (p2 >= t2)
+            key = (float(np.where(f1, c1, np.where(f2, c2, c0)).mean()), -float((f1 | f2).mean()))
+            if best_key is None or key > best_key:
+                best_key, best = key, (float(t1), float(t2))
+    return best
 
 
 def _merged(out: Path, stem: str) -> list[dict]:
+    """All records of one stage: <stem>.jsonl plus <stem>.shardN.jsonl (not other stems sharing a prefix)."""
     recs = []
-    for p in sorted(out.glob(f"{stem}*.jsonl")):
+    for p in sorted([*out.glob(f"{stem}.jsonl"), *out.glob(f"{stem}.shard*.jsonl")]):
         recs += read_jsonl(p)
     return recs
 
@@ -90,8 +113,12 @@ def evaluate(out, probe_dir=None) -> dict:
     s0 = {r["uid"]: r for r in _merged(out, "s0")}
     judge = {r["uid"]: r for r in _merged(out, "judge")}
     rs = defaultdict(dict)
-    for r in _merged(out, "restarts"):
+    for r in _merged(out, "restarts") + _merged(out, "restarts2"):
         rs[r["uid"]][r["key"]] = r
+    for sc in _merged(out, "rescore"):
+        if sc["key"] in rs[sc["uid"]]:
+            rs[sc["uid"]][sc["key"]]["rescore"] = sc
+    has_round2 = any(">" in k for v in rs.values() for k in v)
     live = {r["uid"]: r for r in _merged(out, "live")}
 
     items = [it for it in items_all if it["uid"] in s0 and "q" in rs[it["uid"]]
@@ -103,7 +130,16 @@ def evaluate(out, probe_dir=None) -> dict:
     tau = {1: meta["probes"]["hop1"]["tau"], 2: meta["probes"]["hop2"]["tau"]}
     layers = {1: meta["probes"]["hop1"]["layer"], 2: meta["probes"]["hop2"]["layer"]}
 
+    # Probe scores are recomputed from the saved live features with THIS probe bundle, so a run made with
+    # an older (e.g. uncalibrated) bundle is evaluated on the same scale as `tau`.
+    from src.pipeline.probes import ProbeBundle
+    pb = ProbeBundle(probe_dir)
+
     def scores_of(uid):
+        f = out / "s0_feats" / f"{_safe(uid)}.npz"
+        if f.exists():
+            z = np.load(f)
+            return {k: pb.p_fail(k, z[f"h{k}"]) for k in (1, 2) if f"h{k}" in z.files}
         return {int(k): b["p_fail"] for k, b in s0[uid]["boundaries"].items() if b.get("p_fail") is not None}
 
     probe_scores = {it["uid"]: scores_of(it["uid"]) for it in items}
@@ -157,22 +193,55 @@ def evaluate(out, probe_dir=None) -> dict:
     R["detection_2wiki"] = det
     R["label_sources"] = {s: sum(it["label_source"] == s for it in wiki) for s in ("phase1", "relabeled", "unavailable")}
 
+    # ── accuracy-optimal τ: 2-fold CV over the 2Wiki eval questions; HotpotQA uses τ fit on all of 2Wiki ──
+    def acc_arrays(its):
+        def corr(it, key):
+            r = rs[it["uid"]].get(key)
+            return answer_correct(r["answer"], it["gold_answer"]) if r else None
+        c0 = np.array([answer_correct(s0[it["uid"]]["answer"], it["gold_answer"]) for it in its], float)
+        a = dict(c0=c0)
+        for k in (1, 2):
+            ck = [corr(it, f"h{k}") for it in its]
+            a[f"c{k}"] = np.array([c0[i] if v is None else v for i, v in enumerate(ck)], float)
+            a[f"p{k}"] = np.array([probe_scores[it["uid"]].get(k, -1.0) if ck[i] is not None else -1.0
+                                   for i, it in enumerate(its)], float)
+        return a
+
+    acc_tau = {}
+    if wiki:
+        folds = {f: [it for it in wiki if _fold(it["uid"]) == f] for f in (0, 1)}
+        fit = {f: _acc_optimal_tau(acc_arrays(folds[1 - f])) for f in (0, 1) if folds[1 - f]}
+        fit_all = _acc_optimal_tau(acc_arrays(wiki))
+        for it in items:
+            t = fit.get(_fold(it["uid"]), fit_all) if it["dataset"] == "2wiki" else fit_all
+            acc_tau[it["uid"]] = {1: t[0], 2: t[1]}
+        R["acc_optimal_tau"] = {"fold0_fit_on_fold1": fit.get(0), "fold1_fit_on_fold0": fit.get(1),
+                                "all_2wiki_used_for_hotpotqa": fit_all}
+
     # ── RQ3: end-to-end ──────────────────────────────────────────────────────
     per_item = []
     for it in items:
         row = dict(uid=it["uid"], dataset=it["dataset"], condition=it.get("retrieval_condition"),
                    gold=it["gold_answer"], first_fail=it.get("first_fail"))
+        kw = dict(probe_scores=probe_scores[it["uid"]], tau=tau, judge_rec=judge.get(it["uid"]))
         for sysname in SYSTEMS:
             if sysname == "oracle_restart" and it["dataset"] != "2wiki":
                 continue
-            row[sysname] = outcome(sysname, it, s0[it["uid"]], rs[it["uid"]], probe_scores=probe_scores[it["uid"]],
-                                   tau=tau, judge_rec=judge.get(it["uid"]))
+            row[sysname] = outcome(sysname, it, s0[it["uid"]], rs[it["uid"]], **kw)
+        if acc_tau:
+            row["probe_restart_acc"] = outcome("probe_restart", it, s0[it["uid"]], rs[it["uid"]],
+                                               **dict(kw, tau=acc_tau[it["uid"]]))
+        if has_round2:
+            row["probe_restart_2r"] = outcome("probe_restart", it, s0[it["uid"]], rs[it["uid"]], rounds=2, **kw)
+            row["judge_restart_2r"] = outcome("judge_restart", it, s0[it["uid"]], rs[it["uid"]], rounds=2, **kw)
         if abl_scores is not None:
             row["probe_restart_hop12"] = outcome("probe_restart", it, s0[it["uid"]], rs[it["uid"]],
                                                  probe_scores=abl_scores[it["uid"]], tau={1: tau12, 2: tau12})
         per_item.append(row)
 
-    systems_present = SYSTEMS + (["probe_restart_hop12"] if abl_scores is not None else [])
+    systems_present = SYSTEMS + (["probe_restart_acc"] if acc_tau else []) + \
+        (["probe_restart_2r", "judge_restart_2r"] if has_round2 else []) + \
+        (["probe_restart_hop12"] if abl_scores is not None else [])
     e2e = {}
     for ds in ("2wiki", "hotpotqa"):
         rows = [r for r in per_item if r["dataset"] == ds]
@@ -199,6 +268,12 @@ def evaluate(out, probe_dir=None) -> dict:
         pr = np.array([r["probe_restart"]["correct"] for r in rows], float)
         jr = np.array([r["judge_restart"]["correct"] for r in rows], float)
         e2e[ds]["probe_minus_judge_acc_ci95"] = _paired_ci(pr, jr)
+        if has_round2:
+            pr2 = np.array([r["probe_restart_2r"]["correct"] for r in rows], float)
+            jr2 = np.array([r["judge_restart_2r"]["correct"] for r in rows], float)
+            e2e[ds]["probe2r_minus_judge2r_acc_ci95"] = _paired_ci(pr2, jr2)
+            e2e[ds]["second_restart_rate"] = {s: float(np.mean([r[s]["n_restarts"] == 2 for r in rows]))
+                                              for s in ("probe_restart_2r", "judge_restart_2r")}
         # breakdown by first-stage retrieval condition
         by = defaultdict(list)
         for r in rows:
@@ -267,15 +342,22 @@ def evaluate(out, probe_dir=None) -> dict:
         lat["judge_ms_per_trajectory"] = float(np.mean([judge_ms(u) for u in lv]))
         rms = [r["retrieval_ms"] for u in lv for r in rs[u].values()]
         lat["retrieval_ms"] = float(np.mean(rms)) if rms else None
+        # the live subset runs the probe system with the run's --rounds; compare with the same simulated system
+        live_rounds = max(live[u]["probe_restart"].get("rounds", 1) for u in lv)
+        sim = "probe_restart_2r" if live_rounds == 2 and has_round2 else "probe_restart"
+        lat["live_probe_system"] = sim
         lat["equivalence"] = dict(
             first_pass_is_prefix=float(np.mean([s0[u]["text"].startswith(live[u]["probe_restart"]["first_pass_text"])
                                                 for u in lv])),
-            same_trigger=float(np.mean([live[u]["probe_restart"]["stopped_at"] == sims[u]["probe_restart"]["hop"]
-                                        for u in lv])),
-            same_answer=float(np.mean([live[u]["probe_restart"]["answer"].strip() == sims[u]["probe_restart"]["answer"].strip()
+            same_trigger=float(np.mean([live[u]["probe_restart"]["stopped_at"] == sims[u][sim]["hop"] for u in lv])),
+            # every non-empty stop triggered one restart (the last generation runs with the probe off)
+            same_n_restarts=float(np.mean([
+                sum(s is not None for s in live[u]["probe_restart"].get("stops", [live[u]["probe_restart"]["stopped_at"]]))
+                == sims[u][sim]["n_restarts"] for u in lv])),
+            same_answer=float(np.mean([live[u]["probe_restart"]["answer"].strip() == sims[u][sim]["answer"].strip()
                                        for u in lv])),
             same_correctness=float(np.mean([
-                answer_correct(live[u]["probe_restart"]["answer"], it_by[u]["gold_answer"]) == sims[u]["probe_restart"]["correct"]
+                answer_correct(live[u]["probe_restart"]["answer"], it_by[u]["gold_answer"]) == sims[u][sim]["correct"]
                 for u in lv])))
     R["latency_live_subset"] = lat
 
@@ -354,9 +436,15 @@ def _markdown(R: dict) -> str:
         ci = e.get("probe_minus_judge_acc_ci95")
         if ci:
             L += ["", f"Probe − judge accuracy, paired bootstrap 95% CI: [{ci[0]:+.3f}, {ci[1]:+.3f}]"]
+        ci2 = e.get("probe2r_minus_judge2r_acc_ci95")
+        if ci2:
+            L += [f"Probe − judge accuracy, both with up to 2 restarts: [{ci2[0]:+.3f}, {ci2[1]:+.3f}]; "
+                  f"share of questions restarted twice: {e['second_restart_rate']}"]
+        if ds == "2wiki" and R.get("acc_optimal_tau"):
+            L += [f"Accuracy-optimal τ (τ1, τ2), chosen on the other half of the 2Wiki questions: {R['acc_optimal_tau']}"]
         bc = e.get("by_condition")
         if bc:
-            names = [s for s in SYSTEMS if any(s in v for v in bc.values())]
+            names = [s for s in LABEL if any(s in v for v in bc.values())]
             L += ["", "Accuracy by first-stage retrieval condition:", "",
                   "| condition | n | " + " | ".join(LABEL[s] for s in names) + " |",
                   "|---|---|" + "---|" * len(names)]
@@ -374,7 +462,8 @@ def _markdown(R: dict) -> str:
     if lat:
         L += [f"## Latency (sequential, live subset n={lat['n']})", "", "| system | mean ms | median ms |", "|---|---|---|"]
         for s, m in lat["wall_ms"].items():
-            L.append(f"| {LABEL[s]} | {m['mean']:.0f} | {m['median']:.0f} |")
+            name = LABEL[lat.get("live_probe_system", s)] if s == "probe_restart" else LABEL[s]
+            L.append(f"| {name} | {m['mean']:.0f} | {m['median']:.0f} |")
         L += ["", f"Probe cost per hop boundary: {_f(lat['probe_ms_per_boundary'], 2)} ms; judge cost per trajectory: "
                   f"{_f(lat['judge_ms_per_trajectory'], 1)} ms; retrieval: {_f(lat['retrieval_ms'], 1)} ms.",
               f"Simulated-vs-live equivalence: {lat['equivalence']}", ""]

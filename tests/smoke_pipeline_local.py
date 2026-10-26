@@ -119,7 +119,8 @@ retriever.hf_file = fake_raw_file
 from src.pipeline import run
 
 sys.argv = ["run", "--setting", "tfidf", "--out", str(OUT), "--probe-dir", str(pdir),
-            "--stages", "evalset,corpus,s0,judge,restarts,live,evaluate",
+            "--stages", "evalset,corpus,s0,judge,restarts,rescore,restarts2,live,evaluate",
+            "--repair", "v2", "--rounds", "2",
             "--n-2wiki", str(N), "--n-hotpot", str(N), "--n-live", "4", "--n-extra-corpus", "50",
             "--max-new-tokens", "400", "--batch-size", "3"]
 run.main()
@@ -136,10 +137,17 @@ assert {r["key"] for r in rs} == {"q", "h1", "h2"} and all(len(r["retrieved_titl
 for r in rs:
     it = next(i for i in items if i["uid"] == r["uid"])
     assert not set(r["retrieved_titles"]) & set(it["context_titles"]), "restart must retrieve passages not in context"
+sc = read_jsonl(OUT / "rescore.jsonl")
+assert sc and {r["key"] for r in sc} <= {"h1", "h2"} and all("probe" in r and "judge" in r for r in sc)
+r2 = read_jsonl(OUT / "restarts2.jsonl")
+assert all(">" in r["key"] and r["retrieved_titles"] for r in r2), "round-2 restarts are keyed parent>hop"
 res = json.loads((OUT / "results.json").read_text())
 assert set(res["end_to_end"]) == {"2wiki", "hotpotqa"}
+assert {"probe_restart_acc", "probe_restart_2r", "judge_restart_2r"} <= set(res["end_to_end"]["2wiki"]) or not r2
+assert "acc_optimal_tau" in res
 eq = res["latency_live_subset"]["equivalence"]
 assert eq["first_pass_is_prefix"] == 1.0 and eq["same_trigger"] == 1.0, eq
+print("equivalence:", eq, "| round-2 restarts:", len(r2))
 for f in ("results.md", "tables.tex", "sweep.csv", "per_item.jsonl"):
     assert (OUT / f).exists(), f
 print(f"\n[SMOKE PASS] all stages ran; outputs in {OUT}")

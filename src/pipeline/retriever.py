@@ -26,6 +26,7 @@ import numpy as np
 from src.pipeline.common import RAW_2WIKI_FILE, hf_file, raw_passages
 
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"     # repair v2: re-orders the dense top-20
 
 
 def build_corpus(dataset_ids: set[str], hotpot_records: list[dict], n_extra: int = 20000,
@@ -100,16 +101,30 @@ class DenseRetriever:
             passages = [json.loads(l) for l in f]
         return cls(passages, np.load(d / "embeddings.npy"), device)
 
-    def search(self, query: str, k: int = 3, exclude_titles=()) -> tuple[list[dict], float]:
-        """Top-k passages not already in the context.  Returns (passages, latency_ms)."""
+    def search(self, query: str, k: int = 3, exclude_titles=(), rerank_pool: int = 0) -> tuple[list[dict], float]:
+        """
+        Top-k passages not already in the context.  Returns (passages, latency_ms).
+        rerank_pool > 0: take that many dense candidates and re-order them with a cross-encoder first.
+        """
         t0 = time.perf_counter()
         q = self.encoder.encode([query], convert_to_numpy=True, normalize_embeddings=True).astype(np.float32)
         excl = set(exclude_titles)
-        n = k + len(excl) + 5
+        n = max(k, rerank_pool) + len(excl) + 5
         if self.index is not None:
             _, idx = self.index.search(q, n)
             idx = idx[0]
         else:
             idx = np.argsort(-(self.emb @ q[0]))[:n]
-        hits = [self.passages[i] for i in idx if i >= 0 and self.passages[i]["title"] not in excl][:k]
-        return hits, (time.perf_counter() - t0) * 1000
+        hits = [self.passages[i] for i in idx if i >= 0 and self.passages[i]["title"] not in excl]
+        if rerank_pool > 0:
+            pool = hits[:rerank_pool]
+            scores = self._reranker().predict([(query, f"{p['title']}: {p['text']}") for p in pool],
+                                              show_progress_bar=False)
+            hits = [pool[i] for i in np.argsort(-np.asarray(scores))]
+        return hits[:k], (time.perf_counter() - t0) * 1000
+
+    def _reranker(self):
+        if getattr(self, "_ce", None) is None:
+            from sentence_transformers import CrossEncoder
+            self._ce = CrossEncoder(RERANK_MODEL, device=str(self.encoder.device))
+        return self._ce

@@ -99,6 +99,48 @@ o = outcome("oracle_restart", {"gold_answer": "Lima", "first_fail": 2}, dict(s0,
 assert not o["fired"], "oracle cannot act on a hop that never closed"
 print("[PASS] systems: triggers, answers and token accounting")
 
+# ── Test 5b: second restart round ──────────────────────────────
+rs2 = dict(rs, h2=dict(rs["h2"], answer="Paris", rescore={
+    "probe": {"1": {"n_tokens": 18, "p_fail": 0.2}, "2": {"n_tokens": 35, "p_fail": 0.95}},
+    "judge": {"1": {"p_fail": 0.1, "ntok": 950}, "2": {"p_fail": 0.9, "ntok": 960}}}))
+rs2["h2>2"] = {"answer": "Lima", "n_gen": 40, "n_prompt": 1500}
+o1 = outcome("probe_restart", item, s0, rs2, probe_scores={1: 0.1, 2: 0.9}, tau=tau, rounds=1)
+o2 = outcome("probe_restart", item, s0, rs2, probe_scores={1: 0.1, 2: 0.9}, tau=tau, rounds=2)
+assert not o1["correct"] and o1["n_restarts"] == 1
+assert o2["correct"] and o2["n_restarts"] == 2 and o2["gen_tokens"] == 40 + 35 + 40
+assert o2["processed_tokens"] == 1000 + 40 + 1320 + 35 + 1500 + 40
+jr2 = {"1": {"p_fail": 0.1, "ntok": 900}, "2": {"p_fail": 0.8, "ntok": 910}}
+o3 = outcome("judge_restart", item, s0, rs2, judge_rec=jr2, rounds=2)
+assert o3["correct"] and o3["n_restarts"] == 2 and o3["gen_tokens"] == 60 + 45 + 40
+assert o3["processed_tokens"] == 1000 + 60 + 1810 + 1320 + 45 + 1910 + 1500 + 40, "judge pays for re-checking restart 1"
+print("[PASS] second restart round: probe halts restart 1 at </hop2>; judge re-checks the full restart")
+
+# ── Test 5c: bridge entity + repair queries ────────────────────
+from src.pipeline.common import bridge_entity, repair_query
+assert bridge_entity("From the context, I find that the director of film X is Arcady Boytler.") == "Arcady Boytler"
+assert bridge_entity("From the context, I find that Stewart Raffill is the director of The Tender Warrior.") == "Stewart Raffill"
+assert bridge_entity("From the context, I find that there is no mention of the composer.") == ""
+hops = {"1": "From the context, I find that the director of film X is Arcady Boytler.",
+        "2": "There is no information about where he was born."}
+assert repair_query("Where was the director of X born?", hops, 0) == "Where was the director of X born?"
+assert repair_query("Q?", hops, 1, "v2") == "Q? " + hops["1"] == repair_query("Q?", hops, 1, "v1")
+assert repair_query("Q?", hops, 2, "v1") == "Q? " + hops["2"]
+assert repair_query("Q?", hops, 2, "v2") == "Arcady Boytler. Q? " + hops["2"]
+print("[PASS] bridge_entity / repair_query (v2 leads hop-2 queries with the hop-1 entity)")
+
+# ── Test 5d: Platt calibration is monotone and keeps decisions ─
+from src.pipeline.probes import apply_platt, ece, fit_platt
+rng0 = np.random.default_rng(1)
+yy0 = rng0.integers(0, 2, 400)
+pp0 = np.clip(0.7 + 0.29 * yy0 + rng0.normal(0, 0.05, 400), 0.01, 0.999)    # over-confident scores
+cal = fit_platt(yy0, pp0)
+pc0 = apply_platt(cal, pp0)
+assert cal["a"] > 0 and np.all(np.diff(pc0[np.argsort(pp0)]) >= -1e-12), "calibration must be monotone"
+t_raw = 0.9
+assert np.array_equal(pp0 >= t_raw, pc0 >= apply_platt(cal, t_raw)), "same decisions at the mapped threshold"
+assert ece(yy0, pc0) < ece(yy0, pp0)
+print("[PASS] Platt calibration: monotone, decision-preserving, lower ECE")
+
 # ── Tests 6-8: live generation with a tiny scripted model ──────
 try:
     import torch

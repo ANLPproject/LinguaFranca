@@ -95,6 +95,35 @@ def oof_probs(X, y, groups, n_folds: int = 5, n_jobs: int | None = None) -> np.n
     return out
 
 
+def _logit(p) -> np.ndarray:
+    p = np.clip(np.asarray(p, dtype=np.float64), 1e-7, 1 - 1e-7)
+    return np.log(p / (1 - p))
+
+
+def fit_platt(y, p) -> dict:
+    """1-D logistic regression on logit(p): calibrated = sigmoid(a * logit(p) + b), with a > 0."""
+    from sklearn.linear_model import LogisticRegression
+    lr = LogisticRegression(C=1e6, max_iter=1000).fit(_logit(p)[:, None], np.asarray(y).astype(int))
+    a, b = float(lr.coef_[0, 0]), float(lr.intercept_[0])
+    assert a > 0, "Platt slope must be positive (calibration must be monotone)"
+    return dict(a=a, b=b)
+
+
+def apply_platt(calib: dict | None, p):
+    if not calib:
+        return p
+    out = 1.0 / (1.0 + np.exp(-(calib["a"] * _logit(p) + calib["b"])))
+    return float(out) if np.ndim(out) == 0 else out
+
+
+def ece(y, p, n_bins: int = 10) -> float:
+    """Expected calibration error with equal-width bins."""
+    y, p = np.asarray(y, float), np.asarray(p, float)
+    bins = np.minimum((p * n_bins).astype(int), n_bins - 1)
+    return float(sum(abs(y[bins == b].mean() - p[bins == b].mean()) * (bins == b).mean()
+                     for b in range(n_bins) if (bins == b).any()))
+
+
 def _auroc(y, p) -> float:
     from sklearn.metrics import roc_auc_score
     return float(roc_auc_score(y, p)) if len(set(np.asarray(y).tolist())) > 1 else float("nan")
@@ -174,6 +203,9 @@ def train_probes(setting: str, out_dir, hs_dir=None, hop1_layer="10", hop2_layer
         m_te = np.isin(arr(rows_te, "hop"), hops)
         y_tr, y_te = arr(rows_tr, "y")[m_tr], arr(rows_te, "y")[m_te]
         tau, f_cv = best_f05_threshold(y_tr, oof_cache[(t, L)])
+        # Platt calibration on the out-of-fold scores: a monotone map, so every decision at the mapped
+        # threshold is unchanged, but P(fail) becomes a real probability (τ ≈ 0.99 sat on a cliff).
+        calib = fit_platt(y_tr, oof_cache[(t, L)])
         model = make_probe().fit(X_tr[m_tr, li].astype(np.float32), y_tr)
         p_te = model.predict_proba(X_te[m_te, li].astype(np.float32))[:, 1]
         g_te = arr(rows_te, "group")[m_te]
@@ -191,13 +223,19 @@ def train_probes(setting: str, out_dir, hs_dir=None, hop1_layer="10", hop2_layer
         export_portable(model, out_dir / f"{t}.npz")
         port = LinearProbe(out_dir / f"{t}.npz").p_fail(X_te[m_te, li].astype(np.float32))
         assert np.allclose(port, p_te, atol=1e-6), "portable probe disagrees with sklearn"
-        meta["probes"][t] = dict(layer=int(L), hops=list(hops), tau=float(tau), cv_f05=float(f_cv),
+        pc_te = apply_platt(calib, p_te)
+        test["ece_raw"], test["ece_calibrated"] = ece(y_te, p_te), ece(y_te, pc_te)
+        # τ is stored on the calibrated scale (what ProbeBundle.p_fail returns); tau_raw on the LR scale
+        meta["probes"][t] = dict(layer=int(L), hops=list(hops), tau=float(apply_platt(calib, tau)), tau_raw=float(tau),
+                                 calibration=calib, cv_f05=float(f_cv),
                                  cv_auroc=float(cv_table[t][L]), test=test, test_strata=strata,
                                  n_train_rows=int(m_tr.sum()), n_test_rows=int(m_te.sum()))
-        print(f"[probes] {t}: layer {L}  tau={tau:.3f}  CV F0.5={f_cv:.3f}  TEST auroc={test.get('auroc', float('nan')):.3f} "
-              f"P={test['precision']:.3f} R={test['recall']:.3f} F0.5={test['f05']:.3f} FPR={test['fpr']:.3f}", flush=True)
-        for r, p in zip([r for r, m in zip(rows_te, m_te) if m], p_te):
-            preds.append(dict(task=t, id=r["id"], hop=r["hop"], y=r["y"], p_fail=float(p)))
+        print(f"[probes] {t}: layer {L}  tau={meta['probes'][t]['tau']:.3f} (raw {tau:.3f})  CV F0.5={f_cv:.3f}  "
+              f"TEST auroc={test.get('auroc', float('nan')):.3f} P={test['precision']:.3f} R={test['recall']:.3f} "
+              f"F0.5={test['f05']:.3f} FPR={test['fpr']:.3f}  ECE raw {test['ece_raw']:.3f} -> calibrated "
+              f"{test['ece_calibrated']:.3f}", flush=True)
+        for r, p, pc in zip([r for r, m in zip(rows_te, m_te) if m], p_te, pc_te):
+            preds.append(dict(task=t, id=r["id"], hop=r["hop"], y=r["y"], p_fail=float(pc), p_fail_raw=float(p)))
 
     (out_dir / "probes_meta.json").write_text(json.dumps(meta, indent=1))
     with open(out_dir / "test_predictions.jsonl", "w", encoding="utf-8") as f:
@@ -241,6 +279,7 @@ class ProbeBundle:
         self.models = {t: self._load(probe_dir, t) for t in set(self.hop_task.values())}
         self.layer = {k: self.meta["probes"][t]["layer"] for k, t in self.hop_task.items()}
         self.tau = {k: self.meta["probes"][t]["tau"] for k, t in self.hop_task.items()}
+        self.calib = {k: self.meta["probes"][t].get("calibration") for k, t in self.hop_task.items()}
 
     @staticmethod
     def _load(probe_dir: Path, task: str):
@@ -251,10 +290,14 @@ class ProbeBundle:
         m.p_fail = lambda x, m=m: m.predict_proba(np.nan_to_num(np.atleast_2d(x)))[:, 1]
         return m
 
-    def p_fail(self, k: int, pooled_all_layers: np.ndarray) -> float:
-        """pooled_all_layers: [n_layers, d] mean-pooled hop-k states (float16, as stored in Phase 1)."""
+    def p_fail_raw(self, k: int, pooled_all_layers: np.ndarray) -> float:
+        """Uncalibrated LR output.  pooled_all_layers: [n_layers, d] mean-pooled hop-k states (float16)."""
         x = pooled_all_layers[self.layer[k]].astype(np.float16).astype(np.float32)
         return float(self.models[self.hop_task[k]].p_fail(x)[0])
+
+    def p_fail(self, k: int, pooled_all_layers: np.ndarray) -> float:
+        """Calibrated P(fail) (same scale as self.tau); raw LR output if the bundle has no calibration."""
+        return float(apply_platt(self.calib[k], self.p_fail_raw(k, pooled_all_layers)))
 
 
 def main():

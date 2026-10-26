@@ -105,6 +105,13 @@ Code: `src/pipeline/` · Kaggle notebook: `kaggle/pipeline_phase3_5.ipynb` (gene
 3. **Baseline** (`judge.py`). Doctor-RAG-style: generate the full trajectory, then the same 3B model judges hop 1 and hop 2 (the team's judge prompt, logit P(fail)). The same retrieval and restart run from the earliest flagged hop.
 4. **Evaluation** (`evaluate.py`) compares five systems: no intervention, probe trigger, judge trigger, always-retrieve, and an oracle trigger. It reports detection P/R/F0.5/AUROC, first-failure localization, detection earliness, end-to-end EM/F1, fixed vs broken answers, paired-bootstrap CIs, token cost, wall-clock latency, accuracy-vs-cost sweeps and the RQ4 layer table. Datasets: the 2Wiki held-out test split and HotpotQA (OOD).
 
+Options:
+- `--repair v1|v2`. v2 leads hop-2 queries with hop 1's bridge entity and re-ranks the dense top-20 with a cross-encoder (ms-marco-MiniLM-L-6-v2).
+- `--rounds 1|2`. With 2, a restart that the probe (or judge) flags again gets one more retrieval and restart.
+- `--reuse-from <earlier run>`. Re-runs only the restarts.
+
+The evaluation also reports an accuracy-optimal τ, chosen by 2-fold CV over the 2Wiki questions and transferred to HotpotQA. Probe scores are Platt-calibrated on out-of-fold predictions; this is a monotone map, so no decision changes, but P(fail) becomes a real probability.
+
 Greedy decoding makes a halted trajectory an exact prefix of the uninterrupted one. So every trajectory is generated once with the probe in monitor mode, the restarts are pre-computed, and all systems and thresholds are evaluated from the cache. A 100-question subset runs truly live, to verify this and to measure latency.
 
 ### Settings

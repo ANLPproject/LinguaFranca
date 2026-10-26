@@ -232,6 +232,28 @@ def generate_batch(model, tok, prompts: list[str], max_new_tokens: int = 400, ba
     return results
 
 
+@torch.inference_mode()
+def score_generation(model, tok, prompt: str, text: str, probes, hops=(1, 2)) -> dict:
+    """
+    Probe scores for an already generated text (used for second-round triggers on batched restarts):
+    one full forward pass with Phase 1's extraction, which matches the live features (see tests).
+    Returns {"K": {"n_tokens": tokens generated up to </hopK>, "p_fail": calibrated P(fail)}}.
+    """
+    if not text:
+        return {}
+    try:
+        feats = phase1_features(model, tok, prompt, text, hops)
+    except ValueError:                                   # prompt/generation boundary not token-aligned
+        return {}
+    offs = tok(text, return_offsets_mapping=True, add_special_tokens=False)["offset_mapping"]
+    out = {}
+    for k, f in feats.items():
+        end = hop_match(text, k).end()
+        n_tok = next((i + 1 for i, (cs, ce) in enumerate(offs) if ce >= end), len(offs))
+        out[str(k)] = dict(n_tokens=n_tok, p_fail=probes.p_fail(k, f))
+    return out
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Phase 1 feature extraction (reference implementation for parity tests)
 # ─────────────────────────────────────────────────────────────────────────────

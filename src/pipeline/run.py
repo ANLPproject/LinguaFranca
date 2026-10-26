@@ -15,9 +15,17 @@ corpus    retrieval corpus + embeddings
 s0        uninterrupted trajectory per question, probe in monitor mode   (GPU)
 judge     post-hoc LLM judge on hop 1 / hop 2                             (GPU)
 restarts  retrieval + restart for keys q / h1 / h2, batched               (GPU)
+rescore   probe + judge scores on the h1 / h2 restarts (second-round triggers)   (GPU, --rounds 2)
+restarts2 second retrieval + restart where a restart fails again, keys "h1>2" … (GPU, --rounds 2)
 live      latency subset: truly live probe-halt-retrieve-restart, etc.   (GPU)
 parity    live probe features vs the stored Phase 1 features             (CPU)
 evaluate  metrics, tables, figures                                        (CPU)
+
+Repair versions (--repair)
+    v1  query = question + failing hop text; dense top-3
+    v2  hop-2 queries lead with the hop-1 bridge entity; dense top-20 re-ranked by a cross-encoder -> top-3
+--reuse-from DIR copies the eval set, trajectories (s0), judge scores and features of an earlier run,
+so a new repair / rounds setting only re-runs the restarts.
 
 Example (Kaggle, T4):
     python -m src.pipeline.run --setting tfidf --out /kaggle/working/pipeline_tfidf
@@ -30,6 +38,7 @@ import json
 import os
 import random
 import re
+import shutil
 import time
 from pathlib import Path
 
@@ -38,9 +47,12 @@ import numpy as np
 from src.pipeline.common import (MODEL_NAME, SETTINGS, append_jsonl, context_titles, download_hidden_states,
                                  format_passages, hop_label, hop_text, load_setting_examples,
                                  prompt_from_template, prompt_with_evidence, raw_passages, read_jsonl,
-                                 tfidf_rank, write_jsonl)
+                                 repair_query, tfidf_rank, write_jsonl)
 
-ALL_STAGES = ["probes", "evalset", "corpus", "s0", "judge", "restarts", "live", "parity", "evaluate"]
+ALL_STAGES = ["probes", "evalset", "corpus", "s0", "judge", "restarts", "rescore", "restarts2", "live", "parity",
+              "evaluate"]
+REUSABLE = ["eval_set.jsonl", "hotpot_passages.jsonl", "s0.jsonl", "s0.shard*.jsonl", "judge.jsonl",
+            "judge.shard*.jsonl", "s0_feats", "parity.json", "corpus"]
 
 
 def safe(uid: str) -> str:
@@ -52,8 +64,9 @@ def done_uids(path: Path, key=lambda r: r["uid"]) -> set:
 
 
 def merged(out: Path, stem: str) -> list[dict]:
+    """All records of one stage: <stem>.jsonl plus <stem>.shardN.jsonl (not other stems sharing a prefix)."""
     recs = []
-    for p in sorted(out.glob(f"{stem}*.jsonl")):
+    for p in sorted([*out.glob(f"{stem}.jsonl"), *out.glob(f"{stem}.shard*.jsonl")]):
         recs += read_jsonl(p)
     return recs
 
@@ -146,11 +159,27 @@ def main():
     ap.add_argument("--num-shards", type=int, default=1)
     ap.add_argument("--model", default=MODEL_NAME)
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--repair", default="v2", choices=["v1", "v2"])
+    ap.add_argument("--rerank-pool", type=int, default=20, help="dense candidates re-ranked by the cross-encoder (v2)")
+    ap.add_argument("--rounds", type=int, default=2, choices=[1, 2], help="max restarts per question")
+    ap.add_argument("--reuse-from", default=None, help="earlier run dir: reuse its eval set, s0, judge, features")
     args = ap.parse_args()
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+    if args.reuse_from:
+        src = Path(args.reuse_from)
+        for pat in REUSABLE:
+            for p in src.glob(pat):
+                dst = out / p.name
+                if dst.exists():
+                    continue
+                (shutil.copytree if p.is_dir() else shutil.copy2)(p, dst)
+                print(f"[reuse] {p} -> {dst}")
     stages = [s.strip() for s in args.stages.split(",") if s.strip()]
+    if args.rounds == 1:
+        stages = [s for s in stages if s not in ("rescore", "restarts2")]
+    pool = args.rerank_pool if args.repair == "v2" else 0
     probe_dir = Path(args.probe_dir) if args.probe_dir else out / "probes"
     sfx = f".shard{args.shard}" if args.num_shards > 1 else ""
     token = os.environ.get("HF_TOKEN")
@@ -193,7 +222,7 @@ def main():
         get_retriever()
 
     # ── model (GPU stages) ───────────────────────────────────────────────────
-    gpu_stages = {"s0", "judge", "restarts", "live"} & set(stages)
+    gpu_stages = {"s0", "judge", "restarts", "rescore", "restarts2", "live"} & set(stages)
     model = tok = probes = None
     if gpu_stages:
         from src.pipeline.generation import load_model
@@ -242,15 +271,30 @@ def main():
 
     # ── restarts ─────────────────────────────────────────────────────────────
     def restart_requests(it, s0):
-        reqs = [("q", it["question"])]
+        reqs = [("q", repair_query(it["question"], {}, 0))]
         for k in ("1", "2"):
             if k in s0["boundaries"] and s0["hop_text"][k]:
-                reqs.append((f"h{k}", f"{it['question']} {s0['hop_text'][k]}"))
+                reqs.append((f"h{k}", repair_query(it["question"], s0["hop_text"], int(k), args.repair)))
         return reqs
 
-    if "restarts" in stages:
+    def run_restarts(pending, path, tag):
         from src.pipeline.generation import generate_batch
-        ret = get_retriever()
+        print(f"[{tag}] {len(pending)} generations to run")
+        t0 = time.time()
+        chunk = 8 * args.batch_size
+        for s in range(0, len(pending), chunk):
+            part = pending[s:s + chunk]
+            outs = generate_batch(model, tok, [p["prompt"] for p in part], args.max_new_tokens, args.batch_size)
+            for p, o in zip(part, outs):
+                p = {k: v for k, v in p.items() if k != "prompt"}
+                append_jsonl(path, {**p, **o})
+            print(f"[{tag}] {min(s + chunk, len(pending))}/{len(pending)} ({time.time() - t0:.0f}s)", flush=True)
+
+    def retrieve(it, query, exclude):
+        hits, ms = get_retriever().search(query, args.top_k, exclude_titles=exclude, rerank_pool=pool)
+        return hits, ms
+
+    if "restarts" in stages:
         r_path = out / f"restarts{sfx}.jsonl"
         done = done_uids(r_path, key=lambda r: (r["uid"], r["key"]))
         pending = []
@@ -259,19 +303,65 @@ def main():
                 continue
             for key, query in restart_requests(it, s0_all[it["uid"]]):
                 if (it["uid"], key) not in done:
-                    hits, ms = ret.search(query, args.top_k, exclude_titles=it["context_titles"])
+                    hits, ms = retrieve(it, query, it["context_titles"])
                     pending.append(dict(uid=it["uid"], key=key, query=query, retrieved_titles=[h["title"] for h in hits],
-                                        retrieval_ms=ms, prompt=prompt_with_evidence(it["prompt"], hits)))
-        print(f"[restarts] {len(pending)} generations to run")
+                                        retrieved=[{"title": h["title"], "text": h["text"]} for h in hits],
+                                        retrieval_ms=ms, repair=args.repair, prompt=prompt_with_evidence(it["prompt"], hits)))
+        run_restarts(pending, r_path, "restarts")
+
+    def round1_prompt(it, r):
+        return prompt_with_evidence(it["prompt"], r["retrieved"])
+
+    # ── rescore: second-round trigger scores on the h1 / h2 restarts ─────────
+    if "rescore" in stages:
+        from src.pipeline.generation import score_generation
+        from src.pipeline.judge import Judge
+        judge = Judge(model, tok, prompt_date(items[0]["prompt"]))
+        rs_path = out / f"rescore{sfx}.jsonl"
+        done = done_uids(rs_path, key=lambda r: (r["uid"], r["key"]))
+        mine_uids = {it["uid"] for it in mine}
+        todo = [r for r in merged(out, "restarts") if r["key"] in ("h1", "h2") and r["uid"] in mine_uids
+                and (r["uid"], r["key"]) not in done and "retrieved" in r]
+        print(f"[rescore] {len(todo)} restarts to score")
         t0 = time.time()
-        chunk = 8 * args.batch_size
-        for s in range(0, len(pending), chunk):
-            part = pending[s:s + chunk]
-            outs = generate_batch(model, tok, [p["prompt"] for p in part], args.max_new_tokens, args.batch_size)
-            for p, o in zip(part, outs):
-                p = {k: v for k, v in p.items() if k != "prompt"}
-                append_jsonl(r_path, {**p, **o})
-            print(f"[restarts] {min(s + chunk, len(pending))}/{len(pending)} ({time.time() - t0:.0f}s)", flush=True)
+        for n, r in enumerate(todo):
+            it = by_uid[r["uid"]]
+            hops = {k: hop_text(r["text"], int(k)) for k in ("1", "2")}
+            rec = dict(uid=r["uid"], key=r["key"], hop_text=hops,
+                       probe=score_generation(model, tok, round1_prompt(it, r), r["text"], probes), judge={})
+            ctx = format_passages(r["retrieved"]) + "\n\n" + it["context"]
+            for k in ("1", "2"):
+                if hops[k]:
+                    rec["judge"][k] = judge.p_fail(ctx, it["question"], hops[k])
+            append_jsonl(rs_path, rec)
+            if n % 200 == 0:
+                print(f"[rescore] {n + 1}/{len(todo)} ({time.time() - t0:.0f}s)", flush=True)
+
+    # ── restarts2: a second retrieval + restart where the first restart fails again ──
+    if "restarts2" in stages:
+        from src.pipeline.systems import judge_trigger, probe_trigger
+        r1 = {(r["uid"], r["key"]): r for r in merged(out, "restarts")}
+        r2_path = out / f"restarts2{sfx}.jsonl"
+        done = done_uids(r2_path, key=lambda r: (r["uid"], r["key"]))
+        mine_uids = {it["uid"] for it in mine}
+        pending = []
+        for sc in merged(out, "rescore"):
+            if sc["uid"] not in mine_uids:
+                continue
+            ks = {probe_trigger({int(k): v["p_fail"] for k, v in sc["probe"].items()}, probes.tau),
+                  judge_trigger(sc["judge"])} - {None}
+            for j in sorted(ks):
+                key = f"{sc['key']}>{j}"
+                if (sc["uid"], key) in done:
+                    continue
+                it, parent = by_uid[sc["uid"]], r1[(sc["uid"], sc["key"])]
+                query = repair_query(it["question"], sc["hop_text"], j, args.repair)
+                hits, ms = retrieve(it, query, it["context_titles"] + parent["retrieved_titles"])
+                pending.append(dict(uid=sc["uid"], key=key, query=query, retrieved_titles=[h["title"] for h in hits],
+                                    retrieved=[{"title": h["title"], "text": h["text"]} for h in hits],
+                                    retrieval_ms=ms, repair=args.repair,
+                                    prompt=prompt_with_evidence(round1_prompt(it, parent), hits)))
+        run_restarts(pending, r2_path, "restarts2")
 
     # ── live latency / equivalence subset ────────────────────────────────────
     if "live" in stages:
@@ -287,7 +377,7 @@ def main():
 
         def seq_restart(it, query):
             t = time.perf_counter()
-            hits, ms = ret.search(query, args.top_k, exclude_titles=it["context_titles"])
+            hits, ms = retrieve(it, query, it["context_titles"])
             g = generate_monitored(model, tok, prompt_with_evidence(it["prompt"], hits), None,
                                    max_new_tokens=args.max_new_tokens, keep_pooled=False)
             return dict(answer=g["answer"], text=g["text"], n_gen=g["n_gen"], retrieval_ms=ms,
@@ -295,19 +385,32 @@ def main():
 
         for it in [it for it in subset if it["uid"] not in done]:
             rec = {"uid": it["uid"]}
-            # ours, truly live: generate -> probe halts at </hopK> -> retrieve -> flush -> restart
+            # ours, truly live: generate -> probe halts at </hopK> -> retrieve -> flush -> restart (up to --rounds)
             t = time.perf_counter()
-            g = generate_monitored(model, tok, it["prompt"], probes, halt=True,
+            prompt, exclude = it["prompt"], list(it["context_titles"])
+            g = generate_monitored(model, tok, prompt, probes, halt=True,
                                    max_new_tokens=args.max_new_tokens, keep_pooled=False)
-            k = g["stopped_at"]
-            rs = seq_restart(it, f"{it['question']} {hop_text(g['text'], k)}") if k else None
-            rec["probe_restart"] = dict(stopped_at=k, first_pass_text=g["text"], first_pass_n_gen=g["n_gen"],
-                                        answer=rs["answer"] if rs else g["answer"], restart=rs,
-                                        wall_ms=(time.perf_counter() - t) * 1000)
+            first, stops, n_gen = g, [g["stopped_at"]], g["n_gen"]
+            for r in range(1, args.rounds + 1):
+                if not g["stopped_at"]:
+                    break
+                hops = {k: hop_text(g["text"], int(k)) for k in ("1", "2")}
+                hits, _ = retrieve(it, repair_query(it["question"], hops, g["stopped_at"], args.repair), exclude)
+                exclude += [h["title"] for h in hits]
+                prompt = prompt_with_evidence(prompt, hits)
+                last = r == args.rounds
+                g = generate_monitored(model, tok, prompt, None if last else probes, halt=not last,
+                                       max_new_tokens=args.max_new_tokens, keep_pooled=False)
+                stops.append(g["stopped_at"])
+                n_gen += g["n_gen"]
+            rec["probe_restart"] = dict(stopped_at=first["stopped_at"], stops=stops, rounds=args.rounds,
+                                        first_pass_text=first["text"], first_pass_n_gen=first["n_gen"],
+                                        answer=g["answer"], n_gen=n_gen, wall_ms=(time.perf_counter() - t) * 1000)
             rec["always_retrieve"] = seq_restart(it, it["question"])
             jk = judge_trigger(j_all.get(it["uid"]))
             if jk:
-                rec["judge_restart"] = seq_restart(it, f"{it['question']} {s0_all[it['uid']]['hop_text'][str(jk)]}")
+                rec["judge_restart"] = seq_restart(it, repair_query(it["question"], s0_all[it["uid"]]["hop_text"],
+                                                                    jk, args.repair))
             append_jsonl(l_path, rec)
         print(f"[live] {len(read_jsonl(l_path))} items in latency subset")
 
