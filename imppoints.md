@@ -1,89 +1,145 @@
-# Important Discoveries & Insights (LinguaFranca)
+# Important Discoveries & Insights (LinguaFranca) — v3
 
-## 1. Data Generation & Prompting (Phase 1 & 2)
-* **Strict XML Chain-of-Thought:** We forced LLaMA-3.2-3B to output reasoning steps wrapped in `<hop1>` and `<hop2>` tags. This was absolutely critical because it allowed us to perfectly isolate the "bottleneck" where the model resolves a bridging entity (the `</hop1>` token). 
-* **Counterfactual Generation:** To generate hallucinations, we created "Minimal Pairs" by swapping the real entity with a fake one (e.g., "Soft Parachutes" -> "Seven Billiard Tables"). This confused the model and forced it to hallucinate, giving us perfect 1:1 training data for the probe.
+> **Oct 2026 revision.** Sections 1–7 are the corrected numbers from the audit on branch `fixes-v2`
+> (`FIXES_AND_RERUN.md` §2 lists every error in the earlier version of this file, e.g. the invalid
+> "98.2 % confident-wrong" and "91.4 % all-hop" figures). They were recomputed on the canonical dataset
+> (4,078 examples: 4,000 natural + 78 counterfactual) with the canonical grouped 80/20 split
+> (3,264 train / 814 test). Files referenced in §2–7 (`outputs/probing/`, `outputs/llm_judge/`,
+> `outputs/patching/`, `kaggle/0*.ipynb`) live on `fixes-v2` until it is merged.
+> Section 8 (Phases 3–5) is new: `src/pipeline/`, results in `outputs/pipeline/tfidf/`.
 
-## 2. Advanced Probing Results (Phase 3)
-* **Hop-Level Localization (RQ1):** The probe evaluates the hidden states of *individual hops*, not entire questions. This allows us to say exactly *which* step of the reasoning chain failed.
-* **Layer-wise Accuracies (5-Fold CV):** We found that early layers do not contain strong reasoning signals. The probe accuracy peaks in the middle layers before dropping off.
-  * Layer 8: 89.3% Acc | 95.8% AUROC
-  * Layer 9: 90.6% Acc | 96.2% AUROC
-  * **Layer 10: 91.2% Acc | 96.7% AUROC (Absolute Peak Bottleneck)**
-  * Layer 11: 91.4% Acc | 96.6% AUROC
-  * Layer 24: 88.6% Acc | 94.8% AUROC
-* **Experimental Controls (Proving the Probe is real):**
-  * **Hop-1 Only Probe:** 95.1% Acc, 95.3% AUROC. Proves the probe works perfectly even when isolating the very first reasoning step.
-  * **Shuffled Labels:** ~50.6% Acc. Proves the probe isn't cheating by memorizing dataset artifacts.
-  * **Cross-Hop Generalization (Train on Hop 1, Test on Hop 2):** Dropped to 62.5% Acc, 66.1% AUROC. **Analysis:** This proves that the hidden states for Hop 1 and Hop 2 are geometrically different! The model stores the "I am on step 1" thought differently than the "I am on step 2" thought.
+## 1. Data generation & labeling (Phase 1)
+* **Strict XML chain-of-thought.** Llama-3.2-3B-Instruct wraps each step in `<hop1>…</hop1>`, `<hop2>…</hop2>`. This gives exact token boundaries for pooling per hop.
+* **Context = all 10 passages (2 gold + 8 distractors), not gold-only.** The gold-title filter in `generate_cot._normalise` silently matched nothing on the HF columnar format, so every Phase 1 prompt contains all 10 paragraphs (verified: 4,000 / 4,000). Sections 1–7 therefore describe this *10-passage* setting; the Phase 3–5 experiments (§8) use the TF-IDF top-5 setting from branch `experiment/distractor-rag`.
+* **Every question is strictly 2-hop** (all 4,000 gold reasoning graphs have exactly 2 edges) — but the **model** often writes more steps: 1,329 / 4,000 examples have 3–18 `<hopN>` blocks.
+* **Label = "does the hop text state that hop's gold bridging entity?"** (string → Wikidata alias → SBERT → LLM-judge fallback). Hops 3+ have no gold entity and are now **unlabeled (-1)**. The old labeler called them all failures; they were 64 % of all failure labels and made the hop index alone predictive (77.9 % accuracy).
+* **Label semantics caveat.** "Failure" means *the hop did not state the bridge entity*, which includes detours, not only hallucinations: 38 % of natural hop-1 failures and 48 % of natural hop-2 failures still reach a correct final answer (the model states the fact in a later step).
+* **Class balance.** Hop 1: 3,714 success / 364 failure (8.9 %); hop 2: 2,381 / 1,697 (41.6 %).
+* **Counterfactuals (78)** swap the question's entry entity for another title of the same token length. Because the context is unchanged, ~90 % of them make the model say "X is not mentioned in the context" (hedging). They are an *entity-not-in-context* stratum, reported separately. **Natural hop-1 failures contain no hedging at all** — they are confident wrong or off-target statements.
 
-## 3. Qualitative Error Analysis Results
-The Layer 10 probe correctly identified different modalities of hallucination with **100% confidence**. Manual verification of the top 10 flagged failures showed:
-* **"I Give Up" Failures (Hedging):** The model explicitly stating the entity is missing. *(e.g., "There is no information about Bayan Khutugh's father in the context.")*
-* **Dodging the Question:** The model giving an unrelated fact to avoid answering. *(e.g., When asked for the composer of Daddy-O, the model said: "From the context, I find that the film Daddy-O was released in 1958.")*
-* **Outright Lies:** The model blatantly hallucinating a wrong entity. *(e.g., When asked for the composer of Astral City, the model said: "From the context, I find that the composer of film Astral City is Wagner de Assis." [He is the director, not the composer])*
+## 2. Probing results (Phases 2–3)
+Probe: StandardScaler + logistic regression (balanced class weights) on the mean-pooled hidden state of the hop's tokens. Layer L = output of transformer block L (layer 0 is *after* the first block, not the raw embedding). Layers chosen by 5-fold grouped CV **inside the train split**; numbers are on the held-out test split with 95 % grouped-bootstrap CIs.
 
-## 4. Hedging vs. Confident Lies (Ablation Study)
-A key methodological concern was whether the probe was simply acting as a mechanical "refusal detector" rather than truly understanding reasoning failures. We split the failure class into "Hedging" (explicitly stating lack of knowledge) and "Confidently Wrong" (stating a lie). The layer-wise breakdown proved the probe is doing much more than lexical matching:
-* **Layer 10:** 100.0% accurate at detecting Hedging | 80.0% accurate at detecting Confident Lies.
-* **Layer 11 (The True Sweet Spot):** 100.0% accurate at detecting Hedging | **98.2% accurate at detecting Confident Lies**.
+| task (test split) | layer | acc | bal. acc | AUROC [95 % CI] | failure recall (TPR) | false-alarm rate (FPR) | majority-class acc |
+|---|---|---|---|---|---|---|---|
+| Hop 1 | 10 | 0.951 | 0.860 | **0.953** [0.918, 0.980] | 0.750 | 0.031 | 0.916 |
+| Hop 1, natural only | 10 | 0.950 | 0.827 | 0.942 [0.895, 0.974] | 0.685 | 0.031 | 0.932 |
+| Hop 2 | 13 | 0.899 | 0.896 | 0.949 [0.933, 0.963] | 0.880 | 0.087 | 0.592 |
+| Hops 1+2 pooled | 13 | 0.909 | 0.887 | **0.956** [0.943, 0.966] | 0.845 | 0.070 | 0.754 |
+| Hops 1+2, natural only | 13 | 0.907 | 0.882 | 0.952 [0.939, 0.964] | 0.834 | 0.070 | 0.767 |
 
-**Full Layer-by-Layer Breakdown (Hop-1 Test Set Failures):**
-| Layer | Hedging Acc (%) | Confident Wrong Acc (%) |
-|-------|-----------------|-------------------------|
-| 0     | 100.0           | 65.5                    |
-| 1     | 100.0           | 83.6                    |
-| 2     | 100.0           | 83.6                    |
-| 3     | 92.3            | 70.9                    |
-| 4     | 100.0           | 78.2                    |
-| 5     | 100.0           | 70.9                    |
-| 6     | 100.0           | 80.0                    |
-| 7     | 100.0           | 60.0                    |
-| 8     | 100.0           | 90.9                    |
-| 9     | 84.6            | 60.0                    |
-| 10    | 100.0           | 80.0                    |
-| **11**| **100.0**       | **98.2**                |
-| 12    | 92.3            | 80.0                    |
-| 13    | 100.0           | 78.2                    |
-| 14    | 100.0           | 87.3                    |
-| 15    | 92.3            | 78.2                    |
-| 16    | 92.3            | 74.5                    |
-| 17    | 100.0           | 87.3                    |
-| 18    | 100.0           | 67.3                    |
-| 19    | 100.0           | 74.5                    |
-| 20    | 100.0           | 80.0                    |
-| 21    | 100.0           | 81.8                    |
-| 22    | 100.0           | 78.2                    |
-| 23    | 100.0           | 67.3                    |
-| 24    | 100.0           | 69.1                    |
-| 25    | 100.0           | 70.9                    |
-| 26    | 100.0           | 65.5                    |
-| 27    | 100.0           | 70.9                    |
+**Baselines that never see hidden states (same test rows):**
 
-This definitively proves that the probe is capturing the fundamental failure of reasoning (unsupported facts) deep in the model's representations, regardless of whether the model chooses to express that failure honestly (hedging) or dishonestly (hallucinating).
+| task | TF-IDF on hop text (AUROC / bal. acc) | hop index only | hedge-keyword rule (TPR / FPR) |
+|---|---|---|---|
+| Hop 1 | 0.890 / 0.783 | — | 0.191 / 0.003 |
+| Hop 2 | 0.723 / 0.674 | — | 0.033 / 0.002 |
+| Hops 1+2 | 0.770 / 0.692 | 0.719 / 0.719 | 0.060 / 0.002 |
 
-## 5. Causal Patching & Denoising (Phase 4)
-* **Prompt-End Patching is Too Weak:** Simply injecting a hidden state at the last token of the question prompt resulted in a **0% causal corruption rate**. **Analysis:** The model's attention mechanism just ignores the injected state at the end of the prompt and looks back at the 30+ tokens in the question context to re-derive the entity.
-* **Entity-Level Denoising:** To actually hijack the model's brain, we must intervene at the exact microsecond it finishes thinking about the bridging entity. By harvesting the Clean State at the `</hop1>` token and injecting it into the Counterfactual run exactly at the `</hop1>` token, we overwrite its short-term memory before it starts Hop 2.
+* **Layer profile.** Signal rises from block 0 (hop-1 AUROC 0.83) to a broad plateau over **blocks 9–14** (AUROC 0.95–0.96) and declines slowly to 0.92 at block 27. Layers 10, 11 and 13 are statistically indistinguishable — there is no single "sweet spot" layer.
+* **Controls.** Shuffled-label probe: AUROC 0.47–0.51 (chance). Cross-hop transfer (train hop 1 → test hop 2): AUROC 0.66–0.69 at the middle layers, so hop-1 and hop-2 failure directions differ substantially.
+* **Text vs hidden state.** On hop 1 a bag-of-words on the hop text already reaches AUROC 0.89, and block 0 reaches 0.83, so much of the hop-1 signal is lexical. The middle layers add a real margin (0.95–0.96), especially on hop 2 (0.95 vs 0.72 for text).
+* **Split stability** (`bootstrap_confident_wrong.py`, 5 seeds): hop-1 AUROC 0.961 ± 0.006 (layer 10), 0.960 ± 0.005 (layer 11).
 
-## 6. Phase 5 (Next Steps)
-* **Probe-Triggered RAG:** Because our probe is trained at the Hop-1 level, we can use it in a live application. As the model generates Hop 1, the probe will monitor Layer 11 (since we now know it excels at catching confident lies). If the probe detects a hallucination, it will immediately halt generation (before the error cascades to Hop 2), trigger a retrieval block, and restart the prompt with the correct Wikipedia context.
+## 3. Hedging vs confident failures (hop 1)
+Recall on hop-1 failures at the default threshold, **always with the false-alarm rate on hop-1 successes**:
 
-## 7. Dataset & Methodology Validation (Discussion)
-* **Reasoning Depth Verification:** We verified that the compositional-filtered data used in this project is consistently strictly 2-hop (100.0% of the 4000 examples evaluated contained exactly 2 reasoning edges). This is consistent with 2WikiMultihopQA's core category definition. Therefore, our fixed 2-hop XML template (`<hop1>` and `<hop2>`) perfectly matched the structural reality of the dataset, and the model did not suffer from conflicting pressures or forced compression.
+| layer | hedging failures (all are CFs) | confident failures | false-alarm rate |
+|---|---|---|---|
+| 0 | 0.98 | 0.44 | 0.038 |
+| 5 | 1.00 | 0.60 | 0.025 |
+| 10 | 1.00 | **0.76** (CV) / 0.69 (test, n = 55) | 0.022 / 0.031 |
+| 13 | 1.00 | 0.74 | 0.021 |
+| 20 | 1.00 | 0.62 | 0.026 |
+| 27 | 1.00 | 0.53 | 0.034 |
 
-### 8. The LLM-as-a-Judge Baseline Comparison (Massive Selling Point)
-* **The Experiment:** We tested if Llama-3.2-3B could act as an external judge to catch its own reasoning hallucinations by prompting it with the full Wikipedia context and the reasoning hop.
-* **The Baseline Failure:** The external LLM judge failed completely, achieving only **61.7% accuracy** (barely better than random chance) despite consuming 1080 tokens per hop and taking 697ms of inference time.
-* **The Probe Superiority:** In contrast, the internal Linear Probe on Layer 11 achieved **91.4% accuracy** with **0 token cost** and less than 1ms of latency (O(1) matrix multiplication).
-* **The Conclusion:** Small 3B models lack the capacity to act as reliable external text-based judges for fact-checking. However, they internally *know* when they are hallucinating! Probing hidden states unlocks this knowledge efficiently and accurately.
+(CV = out-of-fold on the train split, n = 240 confident and 56 hedging failures; test n = 55 / 13.)
 
-### 9. Blindness in Post-Hoc LLM Judging
-When broken down by failure type, the un-finetuned LLM Judge completely collapses:
-* **Hedging Failure Accuracy (5.9%):** When the model hedges and claims the answer isn't in the context (even though it is), the LLM judge agrees with the lie 94.1% of the time!
-* **Confident Failure Accuracy (18.4% vs 98.2%):** When evaluated on confident hallucinations, the LLM Judge caught them only 18.4% of the time. In contrast, the internal Linear Probe (Layer 11) caught them **98.2%** of the time.
+* Hedging ("there is no mention of X") is caught at every layer — it is lexically obvious, and in this dataset all hedging failures are counterfactuals.
+* Confident failures are the real test: recall climbs from 44 % (block 0) to **~75 % at blocks 10–13** at a ~2 % false-alarm rate, then falls off in late layers.
+* ⚠️ The previous table ("100 % hedging / 98.2 % confident-wrong at layer 11") came from probes that were trained on **hop 2** and scored on hop 1. They flagged 89 % of hop-1 *successes* too. It must not be used.
 
-### 10. Doctor-RAG Comparison: The Power of Probing
-* The **Doctor-RAG** paper proposes a post-hoc "Diagnose-and-Repair" framework using an LLM to evaluate failed reasoning trajectories. To achieve an 81.3% diagnosis accuracy, they had to rely on a computationally expensive *distilled and fine-tuned* diagnosis LLM.
-* As our 61.7% LLM Baseline shows, off-the-shelf models are terrible at post-hoc text-based diagnosis.
-* **The Narrative Pivot:** Our project demonstrates that instead of waiting for a trajectory to fail and spending heavy compute to fine-tune an LLM just to diagnose the text, we can use a **Linear Probe** to read the model's subconscious hidden states during generation. Our probe achieves **91%+ accuracy** instantly, allowing for an "Early Warning System" that triggers a fix *before* the trajectory fails, rendering heavy post-hoc LLM analysis unnecessary.
+## 4. Qualitative error analysis (hop 1, layer 10, held-out test)
+See `outputs/probing/qualitative_hop1.md`. The probe's most confident natural failures fall into two types:
+* **Off-target / non-progress steps:** the model restates a fact about the film instead of naming the composer or director. Example: "Daddy-O was released in 1958." (asked for its composer).
+* **Confident wrong entity:** "the composer of Astral City is Wagner de Assis" (he is the director); "the composer of Grizzly Man is Werner Herzog" (director, not composer).
+
+## 5. Internal failures → external failures
+The hop-1 probe score predicts a wrong *final* answer only weakly (test AUROC 0.59; the gold hop-1 label itself: 0.56), because many hop-1 "failures" are detours the model recovers from. Hop-level detection works well. The link from hop failure to final-answer failure is weak in this setup and should be stated as such.
+
+## 6. LLM-as-judge baseline (Phase 3) — measured on identical rows
+Source: `kaggle/02_llm_judge.ipynb` (Oct 2026). 1,617 held-out rows (hops 1–2 of the canonical test split; 11 hops with empty text dropped); the probe is scored on exactly the same rows. The judge sees the context, the question and the hop text and is asked whether the step is correct and grounded; P(failure) = P("no") vs P("yes") from one forward pass (no sampling). Llama models ran through ungated mirrors of the same weights (`unsloth/...`).
+
+| detector | AUROC | bal. acc | TPR (failure recall) | FPR | hop-1 AUROC |
+|---|---|---|---|---|---|
+| **Probe** (hop-specific, layers 10/13) | **0.958** | **0.900** | 0.853 | 0.053 | **0.955** |
+| Qwen2.5-7B judge | 0.718 | 0.656 | 0.627 | 0.314 | 0.709 |
+| Llama-3.2-3B judge | 0.606 | 0.546 | 0.175 | 0.083 | 0.674 |
+| Llama-3.1-8B judge | 0.604 | 0.531 | 0.129 | 0.067 | 0.597 |
+| Qwen2.5-3B judge | 0.597 | 0.552 | 0.794 | 0.690 | 0.613 |
+
+* The probe is far ahead of every judge (AUROC 0.96 vs ≤ 0.72). Judge size does not fix it: the 8B Llama is no better than the 3B.
+* Two judges are miscalibrated rather than informative: Qwen-3B answers "no" for 72 % of rows (its 79 % "recall" comes with a 69 % false-alarm rate), and both Llamas answer "yes" for ~90 % of rows (recall 13–18 %). AUROC is the fair, threshold-free comparison; even at the best threshold their balanced accuracy is 0.57–0.66.
+* Failure recall on confident failures (n = 365): probe 0.85, Qwen-7B 0.66, Llama-3B 0.18, Llama-8B 0.13. Hedging failures (n = 24, all counterfactuals): probe 0.96, Llama judges 0.04 — they correctly call "X is not mentioned" a grounded statement, which our label calls a failure, so the CF rows (n = 24) are noisy and should not be over-read.
+* Caveat on interpretation: the judge is never told the gold bridge entity (neither is the probe). The label is "did the hop name the gold bridge entity", which a grounding judge can only partly infer. This is the fair "text-only diagnoser" comparison the proposal asks for, but it is a weaker test than a fine-tuned diagnoser such as Doctor-RAG's.
+* The earlier Llama-3B-judge figures (61.7 % accuracy, 18.4 % confident-failure recall) turn out to be consistent with this re-run (0.184 recall); what was wrong before was the probe side and the comparison setup, not the judge itself.
+
+## 7. Causal patching (Phase 4) — final run (v4, Kaggle, Llama-3.2-3B, 51 token-aligned pairs)
+Source: `kaggle/03_causal_patching.ipynb`, results in `outputs/patching/`. All checks passed (hook self-test, all-positions sanity = 51/51 restored, probe-link self-check cosine = 1.0, 0 errors). The clean and counterfactual (CF) prompts differ only in the swapped entity (median 5 tokens, 2–11); the CF run never states the right entity (0/51) and hedges ("not mentioned") in 86 % of pairs. Earlier patching results (v1 notebook, v2.0 run) are void.
+
+**Experiment A — copy the clean run's internal state into the CF run at block L; does hop 1 now name the correct bridge entity?** (n = 51; success = gold entity appears in the generated hop 1)
+
+| block | entity tokens | tail (tokens after the entity) | last prompt token only | donor-entity control |
+|---|---|---|---|---|
+| 0 | 1.00 | 0.02 | 0.00 | 0.18 |
+| 4 | 1.00 | 0.16 | 0.00 | 0.61 |
+| 8 | 1.00 | 0.45 | 0.00 | 0.43 |
+| 10 | 0.90 | 0.63 | 0.00 | 0.43 |
+| 11 | 0.76 | 0.73 | 0.00 | 0.39 |
+| 13 | 0.69 | 0.65 | 0.04 | 0.37 |
+| 14 | 0.39 | 0.12 | 0.04 | 0.29 |
+| 20 | 0.35 | 0.06 | 0.04 | 0.27 |
+| 24 | 0.08 | 0.04 | 0.00 | 0.06 |
+
+* **Where the entity information lives:** through block ~8 it sits entirely in the entity tokens (100 % restored). Over blocks ~8–13 it is read out into the tokens that follow (tail restoration rises 0.45 → 0.73 while entity-token restoration falls 1.00 → 0.69). By block 14 neither alone is sufficient (0.39 / 0.12), and the single last prompt token never is (≤ 4 %). At blocks 9–13, patching the entity tokens or the tail restores 84–98 % of pairs. This transition window (blocks ~9–14) coincides with the blocks where the hop-1 probe is strongest (§2), which is suggestive but not proof.
+* **The donor control is NOT zero.** Overwriting the entity tokens with a *different* entity's states restores the gold entity in 18–61 % of runs. Most likely, once the question's entity is perturbed to something the model does not recognise it falls back to the only entity in the context (hypothesis, not tested). So the honest effect of "restoring the clean entity" is the paired difference to the donor: significantly positive at blocks 0–13 (exact sign test, every p ≤ 0.0005; +0.27 to +0.82), **but not significant at blocks 14, 16, 20, 24** (+0.02 to +0.10, p ≥ 0.06). Do not claim entity-specific restoration beyond block 13.
+* **Experiment B — a single state at `</hop1>`:** restores 0/51 at blocks 8, 11, 14, 20 (95 % CI 0–7 %; baseline correct 1/51). Fixing the one hop-boundary vector does not fix the outcome.
+* **Experiment C — does the hop-1 probe follow the intervention?** The probe flags 0/51 clean runs and 51/51 CF runs. When an entity patch restores the entity it flags ≤ 5 % of those runs (0 % at blocks 0–10); when it does not it flags 77–100 %. Overall its verdict matches "entity restored?" in 691/714 patched runs (96.8 %). Caveat: the probe reads the states of the generated hop-1 *text*, so a large part of this agreement is expected; it shows the probe tracks the outcome rather than superficial properties of the prompt (the prompt is the same CF prompt in every run).
+* **Limits (state these in the paper):** one model; 51 pairs, all from the counterfactual "entity not in context" type; success is a substring match on the generated hop; the patches restore the *input-side* representation of the entity, not the probed hop-boundary state itself (the latter is Experiment B, which is null). So Phase 4 shows *where the information the hop depends on is processed and that the probe's verdict follows it*; it does not show that the probed hop-1 state alone causes the failure.
+
+## 8. Phases 3–5 — probe-triggered Naive Restart vs. Doctor-RAG-style judge (TF-IDF setting)
+Source: `outputs/pipeline/tfidf/results.md` (full Kaggle run, 500 held-out 2Wiki + 500 HotpotQA questions); paper-ready text in `outputs/pipeline/tfidf/results_section_draft.md`; code `src/pipeline/`.
+
+**Setting.** A weak first-stage retriever: TF-IDF keeps the top 5 of the 10 passages, so both gold passages survive in only 40 % of questions. Dedicated hop-1 and hop-2 probes (logistic regression, layer 10) watch the generation live; if a hop's P(fail) ≥ τ (F0.5-optimal on train-split CV) generation stops, the question + failing hop text retrieve 3 new passages (FAISS, all-MiniLM-L6-v2), and the model restarts with them prepended.
+
+**Probes in this setting (held-out test, stored features).** Hop 1: AUROC 0.933, precision 0.83, recall 0.60, FPR 2.6 %. Hop 2: AUROC 0.910, precision 0.92, recall 0.81, FPR 12.7 %. Layer sweep (train CV): plateau with peaks at layers 13–14; layer 10 is within 0.01 of the best.
+
+**Detection on live trajectories (2Wiki):**
+
+| | probe | judge (same 3B model, post hoc) |
+|---|---|---|
+| Hop-1 AUROC | **0.927** | 0.569 |
+| Hop-2 AUROC | **0.910** | 0.678 |
+| Trajectory F0.5 | **0.902** | 0.718 |
+| First-failure localization (failing trajectories) | **74.4 %** | 24.8 % |
+
+**End-to-end accuracy (F1 ≥ 0.5), Δ vs. no intervention [95 % CI]:**
+
+| system | 2Wiki | HotpotQA (OOD) |
+|---|---|---|
+| No intervention | 0.334 | 0.488 |
+| Always retrieve (no trigger) | 0.346 (+0.012, n.s.) | 0.508 (+0.020, n.s.) |
+| Judge trigger (Doctor-RAG-style) | 0.452 (+0.118) | 0.516 (+0.028) |
+| **Probe trigger (ours)** | **0.472 (+0.138 [+0.104, +0.174])** | **0.576 (+0.088 [+0.052, +0.124])** |
+| Oracle trigger | 0.502 (+0.168) | – |
+
+* The probe trigger recovers **82 %** of the oracle's gain on 2Wiki. On HotpotQA it **significantly beats the judge** (+6.0 pts, CI [+2.4, +9.6]); on 2Wiki probe vs judge accuracy is **not significant** (CI [−1.4, +5.2]).
+* **Gains come from missing evidence:** with both gold passages present all systems are ~equal (0.67–0.68); with only the hop-1 passage 0.146 → 0.382, only the hop-2 passage 0.079 → 0.309.
+* **Blind retrieval does not help:** always-retrieve fixes and breaks answers at similar rates (2Wiki 34 / 28, HotpotQA 62 / 52). *When* to retrieve matters.
+* **Cost:** the probe flags failures after 54 generated tokens vs 168 for the judge (3.1× earlier), processes 40 % fewer tokens, and is 25 % faster end to end (7.8 s vs 10.4 s mean). One probe check costs ~9.5 ms vs ~740 ms for the judge per trajectory.
+* **Ablation:** one all-hops probe instead of two dedicated probes: 0.464 / 0.556 vs 0.472 / 0.576 — same direction as the cross-hop result in §2, small margin.
+* **Validity checks:** live probe features = stored training features (cosine 0.99999); the cached ("simulated") evaluation matches the fully live system on 100 questions (100 % same trigger and correctness).
+* **Caveats:** 61 % of questions are restarted (hop-2 probe FPR 14.5 %); on HotpotQA the probe trigger breaks 25 correct answers (judge 10); final-answer failure prediction does not transfer OOD (HotpotQA AUROC 0.575); the judge is an untuned 3B model, not Doctor-RAG's fine-tuned diagnoser.
+
+## 9. Positioning vs Doctor-RAG
+Doctor-RAG reports 81.3 % diagnosis accuracy with a distilled, fine-tuned diagnoser on its own benchmark; that figure is not directly comparable to ours (different data, labels and granularity). The defensible claims are the matched comparisons: (i) on identical rows, hidden-state probes detect hop failures far better than off-the-shelf text judges up to 8B (§6: AUROC 0.96 vs ≤ 0.72); (ii) used as a live repair trigger with the same retrieval and restart, the probe is at least as accurate as the post-hoc judge in domain and better out of domain, while detecting failures ~3× earlier at ~40 % lower token cost (§8).
