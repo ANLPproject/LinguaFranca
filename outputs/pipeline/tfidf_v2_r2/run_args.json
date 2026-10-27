@@ -1,0 +1,22 @@
+{
+ "setting": "tfidf",
+ "out": "/kaggle/working/pipeline_tfidf_v2_r2",
+ "stages": "probes,evalset,corpus,s0,judge,restarts,rescore,restarts2,live,parity,evaluate",
+ "probe_dir": "/kaggle/working/LinguaFranca/outputs/pipeline/tfidf/probes",
+ "probe_sweep": "none",
+ "n_2wiki": 500,
+ "n_hotpot": 500,
+ "n_live": 100,
+ "n_extra_corpus": 20000,
+ "top_k": 3,
+ "max_new_tokens": 400,
+ "batch_size": 8,
+ "shard": 0,
+ "num_shards": 1,
+ "model": "meta-llama/Llama-3.2-3B-Instruct",
+ "seed": 42,
+ "repair": "v2",
+ "rerank_pool": 20,
+ "rounds": 2,
+ "reuse_from": "/kaggle/input/notebooks/havishbalaga/anlp-project/pipeline_tfidf"
+}

@@ -8,3 +8,6 @@ kaggle_upload/
 outputs/*/probes/
 outputs/probing/test_predictions.csv
 *_results.zip
+
+# extracted Kaggle run outputs (large; summaries live in outputs/pipeline/)
+pipeline_results/
