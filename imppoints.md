@@ -108,41 +108,42 @@ Source: `kaggle/03_causal_patching.ipynb`, results in `outputs/patching/`. All c
 * **Limits (state these in the paper):** one model; 51 pairs, all from the counterfactual "entity not in context" type; success is a substring match on the generated hop; the patches restore the *input-side* representation of the entity, not the probed hop-boundary state itself (the latter is Experiment B, which is null). So Phase 4 shows *where the information the hop depends on is processed and that the probe's verdict follows it*; it does not show that the probed hop-1 state alone causes the failure.
 
 ## 8. Phases 3–5 — probe-triggered Naive Restart vs. Doctor-RAG-style judge (TF-IDF setting)
-Source: `outputs/pipeline/tfidf/results.md` (full Kaggle run, 500 held-out 2Wiki + 500 HotpotQA questions); paper-ready text in `outputs/pipeline/tfidf/results_section_draft.md`; code `src/pipeline/`.
+Final numbers: `outputs/pipeline/tfidf_v2_r2_shared/results.md`; paper-ready text: `outputs/pipeline/tfidf/results_section_draft.md`; data sources, retrieval corpus and retriever: `outputs/pipeline/README.md`; code: `src/pipeline/`.
 
-**Setting.** A weak first-stage retriever: TF-IDF keeps the top 5 of the 10 passages, so both gold passages survive in only 40 % of questions. Dedicated hop-1 and hop-2 probes (logistic regression, layer 10) watch the generation live; if a hop's P(fail) ≥ τ (F0.5-optimal on train-split CV) generation stops, the question + failing hop text retrieve 3 new passages (FAISS, all-MiniLM-L6-v2), and the model restarts with them prepended.
+**Setting.** A weak first-stage retriever: TF-IDF keeps the top 5 of each question's 10 paragraphs, so both gold paragraphs survive in only 41 % of test questions (306 gold paragraphs missing out of 1,000). **One shared probe** (logistic regression, layer 10, Platt-calibrated, τ = 0.639 = F0.5-optimal on train-split CV; the proposal's design) watches generation at `</hop1>` and `</hop2>`. If P(fail) ≥ τ, generation stops. The question + failing hop text (hop 2: led by the hop-1 bridge entity) retrieve from a **94,031-paragraph corpus** (MiniLM + FAISS, cross-encoder re-ranking of the top 20). The top 3 new paragraphs are prepended and the model restarts, with up to 2 restarts.
 
-**Probes in this setting (held-out test, stored features).** Hop 1: AUROC 0.933, precision 0.83, recall 0.60, FPR 2.6 %. Hop 2: AUROC 0.910, precision 0.92, recall 0.81, FPR 12.7 %. Layer sweep (train CV): plateau with peaks at layers 13–14; layer 10 is within 0.01 of the best.
+**Detection on live 2Wiki trajectories:**
 
-**Detection on live trajectories (2Wiki):**
+| | shared probe | dedicated hop-1/hop-2 probes | judge (same 3B model, post hoc) |
+|---|---|---|---|
+| Hop-1 AUROC | **0.918** | 0.927 | 0.569 |
+| Hop-2 AUROC | **0.902** | 0.910 | 0.678 |
+| Trajectory F0.5 | **0.906** | 0.902 | 0.718 |
+| First-failure localization | **72.4 %** | 74.4 % | 24.8 % |
 
-| | probe | judge (same 3B model, post hoc) |
-|---|---|---|
-| Hop-1 AUROC | **0.927** | 0.569 |
-| Hop-2 AUROC | **0.910** | 0.678 |
-| Trajectory F0.5 | **0.902** | 0.718 |
-| First-failure localization (failing trajectories) | **74.4 %** | 24.8 % |
-
-**End-to-end accuracy (F1 ≥ 0.5), Δ vs. no intervention [95 % CI]:**
+**End-to-end accuracy (F1 ≥ 0.5), Δ vs no intervention [95 % CI]:**
 
 | system | 2Wiki | HotpotQA (OOD) |
 |---|---|---|
 | No intervention | 0.334 | 0.488 |
-| Always retrieve (no trigger) | 0.346 (+0.012, n.s.) | 0.508 (+0.020, n.s.) |
-| Judge trigger (Doctor-RAG-style) | 0.452 (+0.118) | 0.516 (+0.028) |
-| **Probe trigger (ours)** | **0.472 (+0.138 [+0.104, +0.174])** | **0.576 (+0.088 [+0.052, +0.124])** |
-| Oracle trigger | 0.502 (+0.168) | – |
+| Always retrieve (no trigger) | 0.344 (+0.010, n.s.) | 0.520 (+0.032, n.s.) |
+| Judge trigger | 0.440 (+0.106) | 0.510 (+0.022, n.s.) |
+| **Probe trigger** | **0.496 (+0.162 [+0.124, +0.200])** | **0.538 (+0.050 [+0.014, +0.084])** |
+| **Probe trigger, ≤ 2 restarts** | **0.552 (+0.218 [+0.178, +0.258])** | 0.530 (+0.042) |
+| Judge trigger, ≤ 2 restarts | 0.456 | 0.518 |
+| Oracle trigger (1 restart) | 0.540 | – |
 
-* The probe trigger recovers **82 %** of the oracle's gain on 2Wiki. On HotpotQA it **significantly beats the judge** (+6.0 pts, CI [+2.4, +9.6]); on 2Wiki probe vs judge accuracy is **not significant** (CI [−1.4, +5.2]).
-* **Gains come from missing evidence:** with both gold passages present all systems are ~equal (0.67–0.68); with only the hop-1 passage 0.146 → 0.382, only the hop-2 passage 0.079 → 0.309.
-* **Blind retrieval does not help:** always-retrieve fixes and breaks answers at similar rates (2Wiki 34 / 28, HotpotQA 62 / 52). *When* to retrieve matters.
-* **Cost:** the probe flags failures after 54 generated tokens vs 168 for the judge (3.1× earlier), processes 40 % fewer tokens, and is 25 % faster end to end (7.8 s vs 10.4 s mean). One probe check costs ~9.5 ms vs ~740 ms for the judge per trajectory.
-* **Ablation:** one all-hops probe instead of two dedicated probes: 0.464 / 0.556 vs 0.472 / 0.576 — same direction as the cross-hop result in §2, small margin.
-* **Validity checks:** live probe features = stored training features (cosine 0.99999); the cached ("simulated") evaluation matches the fully live system on 100 questions (100 % same trigger and correctness).
-* **Caveats:** 61 % of questions are restarted (hop-2 probe FPR 14.5 %); on HotpotQA the probe trigger breaks 25 correct answers (judge 10); final-answer failure prediction does not transfer OOD (HotpotQA AUROC 0.575); the judge is an untuned 3B model, not Doctor-RAG's fine-tuned diagnoser.
+* **Probe vs judge:** significant on 2Wiki (+5.6, CI [+2.2, +9.2]; ≤ 2 restarts +9.6, CI [+5.6, +13.4]); not significant on HotpotQA (+2.8, CI [−0.8, +6.4]).
+* **Gains come from missing evidence:** only hop-1 paragraph present 0.146 → 0.415 (0.488 with 2 restarts); only hop-2 paragraph 0.079 → 0.345 (0.394); both present ~unchanged. Blind always-retrieve fixes and breaks answers at similar rates.
+* **Cost:** flags failures after 52 vs 168 generated tokens (3.2× earlier), 41 % fewer processed tokens, one probe check ≈ 9.5 ms vs ≈ 740 ms for the judge; live latency 9.9 s (probe, ≤ 2 restarts) vs 10.1 s (judge, 1 restart).
+* **Ablations:** dedicated hop-1/hop-2 probes +1.2–2.4 pts. The original Naive Restart (repair v1) scores 0.464 / 0.556: the improved repair helps in domain (+3.2) but not OOD (−1.8). An accuracy-optimal τ restarts 92–97 % of questions for ≤ +3.6 pts, so F0.5 τ is the better trade-off.
+* **Validity checks:** live features = training features (cosine 0.99999); the cached evaluation matches the fully live system on 100 questions (100 % same trigger, restart count and correctness).
+* **Caveats:** the judge is the untuned, zero-shot 3B model, not Doctor-RAG's fine-tuned diagnoser; the repair improvements were designed after seeing the first 2Wiki results (HotpotQA is the clean check); 60 % of questions are restarted; on HotpotQA the probe breaks more correct answers than the judge (32 vs 14).
 
 ## 9. Positioning vs Doctor-RAG
-Doctor-RAG reports 81.3 % diagnosis accuracy with a distilled, fine-tuned diagnoser on its own benchmark; that figure is not directly comparable to ours (different data, labels and granularity). The defensible claims are the matched comparisons: (i) on identical rows, hidden-state probes detect hop failures far better than off-the-shelf text judges up to 8B (§6: AUROC 0.96 vs ≤ 0.72); (ii) used as a live repair trigger with the same retrieval and restart, the probe is at least as accurate as the post-hoc judge in domain and better out of domain, while detecting failures ~3× earlier at ~40 % lower token cost (§8).
+Doctor-RAG reports 81.3 % diagnosis accuracy with a distilled, fine-tuned diagnoser on its own benchmark; that figure is not directly comparable to ours (different data, labels and granularity). The defensible claims are the matched comparisons:
+1. On identical rows, hidden-state probes detect hop failures far better than off-the-shelf text judges up to 8B (§6: AUROC 0.96 vs ≤ 0.72).
+2. Used as a live repair trigger with the same retrieval and restart, a single probe is significantly more accurate than the post-hoc judge in domain, and at least as accurate out of domain, while detecting failures ~3× earlier at ~40 % lower token cost (§8).
 
 ## 10. Report checklist (from Anish, `experiment/distractor-rag`) — where each item stands
 1. Data-imbalance numbers — §1 (class balance) and the TF-IDF setting's hop-1 / hop-2 failure rates in §8.
