@@ -268,14 +268,19 @@ class LinearProbe:
         return 1.0 / (1.0 + np.exp(-(((x - self.mean) / self.scale) @ self.coef + self.intercept)))
 
 
+PROBE_MODES = {"shared": {1: "hop12", 2: "hop12"},       # one probe + one τ for every hop boundary (main)
+               "dedicated": {1: "hop1", 2: "hop2"}}      # a separate probe + τ per hop (ablation)
+
+
 class ProbeBundle:
     """The probes + thresholds used by the live generation loop."""
 
-    def __init__(self, probe_dir, hop_task: dict | None = None):
+    def __init__(self, probe_dir, hop_task: dict | None = None, mode: str = "shared"):
         probe_dir = Path(probe_dir)
         self.meta = json.loads((probe_dir / "probes_meta.json").read_text())
-        # which trained probe scores each boundary (default: hop-specific probes)
-        self.hop_task = hop_task or {1: "hop1", 2: "hop2"}
+        # which trained probe scores each boundary
+        self.mode = mode if hop_task is None else "custom"
+        self.hop_task = hop_task or PROBE_MODES[mode]
         self.models = {t: self._load(probe_dir, t) for t in set(self.hop_task.values())}
         self.layer = {k: self.meta["probes"][t]["layer"] for k, t in self.hop_task.items()}
         self.tau = {k: self.meta["probes"][t]["tau"] for k, t in self.hop_task.items()}

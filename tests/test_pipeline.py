@@ -221,7 +221,7 @@ if tok is not None:
         assert np.allclose(LinearProbe(Path(d) / "check.npz").p_fail(X), clf.predict_proba(X)[:, 1], atol=1e-9)
         meta = {"probes": {"hop1": {"layer": 2, "tau": 0.0}, "hop2": {"layer": 3, "tau": 1.01}}}
         Path(d, "probes_meta.json").write_text(json.dumps(meta))
-        pb = ProbeBundle(d)
+        pb = ProbeBundle(d, mode="dedicated")
         state["i"] = 0
         h = generate_monitored(model, tok, prompt, probes=pb, halt=True, max_new_tokens=120)
         assert h["stopped_at"] == 1 and h["n_gen"] == b1["n_tokens"] and h["text"].rstrip().endswith("</hop1>")
@@ -229,7 +229,7 @@ if tok is not None:
         meta["probes"]["hop1"]["tau"] = 1.01
         Path(d, "probes_meta.json").write_text(json.dumps(meta))
         state["i"] = 0
-        h2 = generate_monitored(model, tok, prompt, probes=ProbeBundle(d), halt=True, max_new_tokens=120)
+        h2 = generate_monitored(model, tok, prompt, probes=ProbeBundle(d, mode="dedicated"), halt=True, max_new_tokens=120)
         assert h2["stopped_at"] is None and h2["text"] == COT
     print("[PASS] halting: probe stops at </hop1> (prefix of the full trajectory); τ > 1 never halts")
 

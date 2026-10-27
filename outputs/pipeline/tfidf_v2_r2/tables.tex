@@ -4,14 +4,14 @@
 System & Acc & EM & F1 & Restart rate & Gen.\ tokens \\
 \midrule
 No intervention & 0.334 & 0.258 & 0.313 & 0.00 & 142.1 \\
-Probe trigger (ours) & 0.510 & 0.390 & 0.475 & 0.61 & 157.5 \\
+Probe trigger (ours) & 0.496 & 0.382 & 0.462 & 0.60 & 157.4 \\
 Judge trigger (Doctor-RAG-style) & 0.440 & 0.322 & 0.404 & 0.46 & 212.4 \\
 Always retrieve & 0.344 & 0.258 & 0.315 & 1.00 & 145.9 \\
 Oracle trigger & 0.540 & 0.406 & 0.498 & 0.69 & 156.5 \\
-Probe trigger, accuracy-optimal τ (2-fold CV) & 0.536 & 0.402 & 0.492 & 0.89 & 175.3 \\
-Probe trigger, up to 2 restarts & 0.564 & 0.426 & 0.520 & 0.61 & 168.1 \\
+Probe trigger, accuracy-optimal τ (2-fold CV) & 0.532 & 0.400 & 0.488 & 0.92 & 176.6 \\
+Probe trigger, dedicated hop-1 / hop-2 probes, up to 2 restarts (ablation) & 0.564 & 0.426 & 0.520 & 0.61 & 168.1 \\
 Judge trigger, up to 2 restarts & 0.456 & 0.338 & 0.419 & 0.46 & 249.0 \\
-Probe trigger, one all-hops probe (ablation) & 0.496 & 0.382 & 0.462 & 0.60 & 157.4 \\
+Probe trigger, dedicated hop-1 / hop-2 probes (ablation) & 0.510 & 0.390 & 0.475 & 0.61 & 157.5 \\
 \bottomrule
 \end{tabular}
 
@@ -21,13 +21,13 @@ Probe trigger, one all-hops probe (ablation) & 0.496 & 0.382 & 0.462 & 0.60 & 15
 System & Acc & EM & F1 & Restart rate & Gen.\ tokens \\
 \midrule
 No intervention & 0.488 & 0.352 & 0.470 & 0.00 & 133.6 \\
-Probe trigger (ours) & 0.558 & 0.400 & 0.530 & 0.61 & 156.3 \\
+Probe trigger (ours) & 0.538 & 0.374 & 0.510 & 0.59 & 158.1 \\
 Judge trigger (Doctor-RAG-style) & 0.510 & 0.364 & 0.487 & 0.23 & 163.6 \\
 Always retrieve & 0.520 & 0.366 & 0.496 & 1.00 & 135.3 \\
-Probe trigger, accuracy-optimal τ (2-fold CV) & 0.558 & 0.386 & 0.534 & 0.94 & 187.1 \\
-Probe trigger, up to 2 restarts & 0.554 & 0.392 & 0.531 & 0.61 & 176.5 \\
+Probe trigger, accuracy-optimal τ (2-fold CV) & 0.562 & 0.386 & 0.533 & 0.97 & 187.9 \\
+Probe trigger, dedicated hop-1 / hop-2 probes, up to 2 restarts (ablation) & 0.554 & 0.392 & 0.531 & 0.61 & 176.5 \\
 Judge trigger, up to 2 restarts & 0.518 & 0.372 & 0.494 & 0.23 & 173.2 \\
-Probe trigger, one all-hops probe (ablation) & 0.538 & 0.374 & 0.510 & 0.59 & 158.1 \\
+Probe trigger, dedicated hop-1 / hop-2 probes (ablation) & 0.558 & 0.400 & 0.530 & 0.61 & 156.3 \\
 \bottomrule
 \end{tabular}
 
@@ -36,11 +36,14 @@ Probe trigger, one all-hops probe (ablation) & 0.538 & 0.374 & 0.510 & 0.59 & 15
 \toprule
 Rows & Trigger & AUROC & P & R & F$_{0.5}$ & FPR \\
 \midrule
-hop1 & probe & 0.927 & 0.847 & 0.588 & 0.779 & 0.022 \\
+hop1 & probe & 0.918 & 0.772 & 0.718 & 0.761 & 0.043 \\
+hop1 & probe dedicated & 0.927 & 0.847 & 0.588 & 0.779 & 0.022 \\
 hop1 & judge & 0.569 & 0.198 & 0.306 & 0.213 & 0.254 \\
-hop2 & probe & 0.910 & 0.918 & 0.817 & 0.895 & 0.145 \\
+hop2 & probe & 0.902 & 0.940 & 0.807 & 0.910 & 0.103 \\
+hop2 & probe dedicated & 0.910 & 0.918 & 0.817 & 0.895 & 0.145 \\
 hop2 & judge & 0.678 & 0.796 & 0.382 & 0.654 & 0.194 \\
-trajectory & probe & – & 0.928 & 0.809 & 0.902 & 0.148 \\
+trajectory & probe & – & 0.937 & 0.801 & 0.906 & 0.128 \\
+trajectory & probe dedicated & – & 0.928 & 0.809 & 0.902 & 0.148 \\
 trajectory & judge & – & 0.795 & 0.519 & 0.718 & 0.315 \\
 \bottomrule
 \end{tabular}

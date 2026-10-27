@@ -31,9 +31,10 @@ from src.pipeline.systems import judge_trigger, outcome, probe_trigger
 SYSTEMS = ["no_intervention", "probe_restart", "judge_restart", "always_retrieve", "oracle_restart"]
 LABEL = {"no_intervention": "No intervention", "probe_restart": "Probe trigger (ours)",
          "judge_restart": "Judge trigger (Doctor-RAG-style)", "always_retrieve": "Always retrieve",
-         "oracle_restart": "Oracle trigger", "probe_restart_hop12": "Probe trigger, one all-hops probe (ablation)",
+         "oracle_restart": "Oracle trigger",
          "probe_restart_acc": "Probe trigger, accuracy-optimal τ (2-fold CV)",
          "probe_restart_2r": "Probe trigger, up to 2 restarts", "judge_restart_2r": "Judge trigger, up to 2 restarts"}
+MODE_TEXT = {"shared": "one shared probe for both hops", "dedicated": "dedicated hop-1 / hop-2 probes"}
 TAU_GRID = np.round(np.linspace(0, 1, 51), 2)
 
 
@@ -105,7 +106,7 @@ def _relabel(items: list[dict], s0: dict) -> None:
         it["label_source"] = "relabeled"
 
 
-def evaluate(out, probe_dir=None) -> dict:
+def evaluate(out, probe_dir=None, probe_mode: str = "shared") -> dict:
     out = Path(out)
     probe_dir = Path(probe_dir) if probe_dir else out / "probes"
     meta = json.loads((probe_dir / "probes_meta.json").read_text())
@@ -127,41 +128,31 @@ def evaluate(out, probe_dir=None) -> dict:
     print(f"[evaluate] {len(items)}/{len(items_all)} items have all outputs")
     _relabel(items, s0)
 
-    tau = {1: meta["probes"]["hop1"]["tau"], 2: meta["probes"]["hop2"]["tau"]}
-    layers = {1: meta["probes"]["hop1"]["layer"], 2: meta["probes"]["hop2"]["layer"]}
-
     # Probe scores are recomputed from the saved live features with THIS probe bundle, so a run made with
-    # an older (e.g. uncalibrated) bundle is evaluated on the same scale as `tau`.
-    from src.pipeline.probes import ProbeBundle
-    pb = ProbeBundle(probe_dir)
+    # an older (e.g. uncalibrated) bundle or the other probe mode is evaluated on the same scale as `tau`.
+    from src.pipeline.probes import PROBE_MODES, ProbeBundle
+    alt_mode = next(m for m in PROBE_MODES if m != probe_mode)
+    pb, pb_alt = ProbeBundle(probe_dir, mode=probe_mode), ProbeBundle(probe_dir, mode=alt_mode)
+    tau, layers, tau_alt = pb.tau, pb.layer, pb_alt.tau
+    LABEL["probe_restart_alt"] = f"Probe trigger, {MODE_TEXT[alt_mode]} (ablation)"
+    LABEL["probe_restart_2r_alt"] = f"Probe trigger, {MODE_TEXT[alt_mode]}, up to 2 restarts (ablation)"
 
-    def scores_of(uid):
+    def scores_of(uid, bundle):
         f = out / "s0_feats" / f"{_safe(uid)}.npz"
         if f.exists():
             z = np.load(f)
-            return {k: pb.p_fail(k, z[f"h{k}"]) for k in (1, 2) if f"h{k}" in z.files}
-        return {int(k): b["p_fail"] for k, b in s0[uid]["boundaries"].items() if b.get("p_fail") is not None}
+            return {k: bundle.p_fail(k, z[f"h{k}"]) for k in (1, 2) if f"h{k}" in z.files}
+        return None
 
-    probe_scores = {it["uid"]: scores_of(it["uid"]) for it in items}
+    probe_scores = {it["uid"]: scores_of(it["uid"], pb) for it in items}
+    if any(v is None for v in probe_scores.values()):
+        raise SystemExit("s0_feats/ is missing: probe scores cannot be recomputed for this probe bundle")
+    alt_scores = {it["uid"]: scores_of(it["uid"], pb_alt) for it in items}
+    # second-round triggers were scored during the run with the run's probe mode
+    run_args = json.loads((out / "run_args.json").read_text()) if (out / "run_args.json").exists() else {}
+    run_mode = run_args.get("probe_mode", "dedicated")       # runs before the switch used dedicated probes
 
-    # ablation: one all-hops probe at both boundaries (scored offline from the saved live features)
-    abl_scores = None
-    if "hop12" in meta["probes"] and (out / "s0_feats").exists():
-        from src.pipeline.probes import ProbeBundle
-        pb12 = ProbeBundle(probe_dir, hop_task={1: "hop12", 2: "hop12"})
-        tau12 = meta["probes"]["hop12"]["tau"]
-        abl_scores = {}
-        for it in items:
-            f = out / "s0_feats" / f"{_safe(it['uid'])}.npz"
-            sc = {}
-            if f.exists():
-                z = np.load(f)
-                for k in (1, 2):
-                    if f"h{k}" in z.files:
-                        sc[k] = pb12.p_fail(k, z[f"h{k}"])
-            abl_scores[it["uid"]] = sc
-
-    R: dict = dict(setting=meta["setting"], n_items=len(items), probe_layers=layers, tau=tau)
+    R: dict = dict(setting=meta["setting"], probe_mode=probe_mode, n_items=len(items), probe_layers=layers, tau=tau)
 
     # ── RQ1: detection on 2Wiki ──────────────────────────────────────────────
     wiki = [it for it in items if it["dataset"] == "2wiki"]
@@ -174,16 +165,20 @@ def evaluate(out, probe_dir=None) -> dict:
             continue
         y = [it["labels"][str(k)] for it, _, _ in rows]
         pp = np.array([p for _, p, _ in rows]); pj = np.array([j for _, _, j in rows])
-        det[f"hop{k}"] = dict(probe=detection_metrics(y, pp >= tau[k], pp), judge=detection_metrics(y, pj >= 0.5, pj))
+        pa = np.array([alt_scores[it["uid"]][k] for it, _, _ in rows])
+        det[f"hop{k}"] = {"probe": detection_metrics(y, pp >= tau[k], pp), "judge": detection_metrics(y, pj >= 0.5, pj),
+                          f"probe_{alt_mode}": detection_metrics(y, pa >= tau_alt[k], pa)}
     traj_rows = [it for it in wiki if it["label_source"] != "unavailable"]
     if traj_rows:
         y = [int(it["first_fail"] in (1, 2)) for it in traj_rows]
         kp = [probe_trigger(probe_scores[it["uid"]], tau) for it in traj_rows]
         kj = [judge_trigger(judge.get(it["uid"])) for it in traj_rows]
-        traj = dict(probe=detection_metrics(y, [k is not None for k in kp]),
-                    judge=detection_metrics(y, [k is not None for k in kj]))
+        ka = [probe_trigger(alt_scores[it["uid"]], tau_alt) for it in traj_rows]
+        traj = {"probe": detection_metrics(y, [k is not None for k in kp]),
+                "judge": detection_metrics(y, [k is not None for k in kj]),
+                f"probe_{alt_mode}": detection_metrics(y, [k is not None for k in ka])}
         fail = [i for i, v in enumerate(y) if v]
-        for name, ks in (("probe", kp), ("judge", kj)):
+        for name, ks in (("probe", kp), ("judge", kj), (f"probe_{alt_mode}", ka)):
             traj[name]["localization_acc_on_failures"] = (
                 float(np.mean([ks[i] == traj_rows[i]["first_fail"] for i in fail])) if fail else float("nan"))
             traj[name]["exact_first_fail_acc_all"] = float(np.mean(
@@ -219,6 +214,7 @@ def evaluate(out, probe_dir=None) -> dict:
                                 "all_2wiki_used_for_hotpotqa": fit_all}
 
     # ── RQ3: end-to-end ──────────────────────────────────────────────────────
+    p2_key = "probe_restart_2r" if run_mode == probe_mode else "probe_restart_2r_alt"
     per_item = []
     for it in items:
         row = dict(uid=it["uid"], dataset=it["dataset"], condition=it.get("retrieval_condition"),
@@ -231,17 +227,18 @@ def evaluate(out, probe_dir=None) -> dict:
         if acc_tau:
             row["probe_restart_acc"] = outcome("probe_restart", it, s0[it["uid"]], rs[it["uid"]],
                                                **dict(kw, tau=acc_tau[it["uid"]]))
+        alt_kw = dict(kw, probe_scores=alt_scores[it["uid"]], tau=tau_alt)
+        row["probe_restart_alt"] = outcome("probe_restart", it, s0[it["uid"]], rs[it["uid"]], **alt_kw)
         if has_round2:
-            row["probe_restart_2r"] = outcome("probe_restart", it, s0[it["uid"]], rs[it["uid"]], rounds=2, **kw)
+            # second-round probe scores were computed during the run, so the 2-round probe system
+            # exists for the run's probe mode only (main row if it matches, ablation row otherwise)
+            row[p2_key] = outcome("probe_restart", it, s0[it["uid"]], rs[it["uid"]], rounds=2,
+                                  **(kw if run_mode == probe_mode else alt_kw))
             row["judge_restart_2r"] = outcome("judge_restart", it, s0[it["uid"]], rs[it["uid"]], rounds=2, **kw)
-        if abl_scores is not None:
-            row["probe_restart_hop12"] = outcome("probe_restart", it, s0[it["uid"]], rs[it["uid"]],
-                                                 probe_scores=abl_scores[it["uid"]], tau={1: tau12, 2: tau12})
         per_item.append(row)
 
     systems_present = SYSTEMS + (["probe_restart_acc"] if acc_tau else []) + \
-        (["probe_restart_2r", "judge_restart_2r"] if has_round2 else []) + \
-        (["probe_restart_hop12"] if abl_scores is not None else [])
+        ([p2_key, "judge_restart_2r"] if has_round2 else []) + ["probe_restart_alt"]
     e2e = {}
     for ds in ("2wiki", "hotpotqa"):
         rows = [r for r in per_item if r["dataset"] == ds]
@@ -269,11 +266,12 @@ def evaluate(out, probe_dir=None) -> dict:
         jr = np.array([r["judge_restart"]["correct"] for r in rows], float)
         e2e[ds]["probe_minus_judge_acc_ci95"] = _paired_ci(pr, jr)
         if has_round2:
-            pr2 = np.array([r["probe_restart_2r"]["correct"] for r in rows], float)
-            jr2 = np.array([r["judge_restart_2r"]["correct"] for r in rows], float)
-            e2e[ds]["probe2r_minus_judge2r_acc_ci95"] = _paired_ci(pr2, jr2)
+            if p2_key == "probe_restart_2r":
+                pr2 = np.array([r["probe_restart_2r"]["correct"] for r in rows], float)
+                jr2 = np.array([r["judge_restart_2r"]["correct"] for r in rows], float)
+                e2e[ds]["probe2r_minus_judge2r_acc_ci95"] = _paired_ci(pr2, jr2)
             e2e[ds]["second_restart_rate"] = {s: float(np.mean([r[s]["n_restarts"] == 2 for r in rows]))
-                                              for s in ("probe_restart_2r", "judge_restart_2r")}
+                                              for s in (p2_key, "judge_restart_2r")}
         # breakdown by first-stage retrieval condition
         by = defaultdict(list)
         for r in rows:
@@ -344,7 +342,11 @@ def evaluate(out, probe_dir=None) -> dict:
         lat["retrieval_ms"] = float(np.mean(rms)) if rms else None
         # the live subset runs the probe system with the run's --rounds; compare with the same simulated system
         live_rounds = max(live[u]["probe_restart"].get("rounds", 1) for u in lv)
-        sim = "probe_restart_2r" if live_rounds == 2 and has_round2 else "probe_restart"
+        # (the live probe ran in the run's probe mode)
+        if live_rounds == 2 and has_round2:
+            sim = p2_key
+        else:
+            sim = "probe_restart" if run_mode == probe_mode else "probe_restart_alt"
         lat["live_probe_system"] = sim
         lat["equivalence"] = dict(
             first_pass_is_prefix=float(np.mean([s0[u]["text"].startswith(live[u]["probe_restart"]["first_pass_text"])
@@ -401,7 +403,7 @@ def _f(x, nd=3):
 
 def _markdown(R: dict) -> str:
     L = [f"# Phase 3–5 results — setting `{R['setting']}`", "",
-         f"Items evaluated: {R['n_items']}.  Probe layers {R['probe_layers']}, thresholds "
+         f"Items evaluated: {R['n_items']}.  Main probe: {MODE_TEXT[R['probe_mode']]}; layers {R['probe_layers']}, thresholds "
          f"{ {k: round(v, 3) for k, v in R['tau'].items()} } (F0.5-optimal on train-split CV).", ""]
     det = R.get("detection_2wiki", {})
     if det:
@@ -410,7 +412,7 @@ def _markdown(R: dict) -> str:
               "| rows | trigger | n | fail | AUROC | precision | recall | F0.5 | FPR | flag rate |",
               "|---|---|---|---|---|---|---|---|---|---|"]
         for rowname in ("hop1", "hop2", "trajectory"):
-            for trig in ("probe", "judge"):
+            for trig in sorted(det.get(rowname, {}), key=lambda t: (t != "probe", t == "judge")):
                 m = det.get(rowname, {}).get(trig)
                 if m:
                     L.append(f"| {rowname} | {trig} | {m['n']} | {m['n_fail']} | {_f(m.get('auroc'))} | {_f(m['precision'])} | "
@@ -498,10 +500,10 @@ def _latex(R: dict) -> str:
         L += [f"% detection, 2Wiki ({R['setting']})", r"\begin{tabular}{llrrrrr}", r"\toprule",
               r"Rows & Trigger & AUROC & P & R & F$_{0.5}$ & FPR \\", r"\midrule"]
         for rowname in ("hop1", "hop2", "trajectory"):
-            for trig in ("probe", "judge"):
+            for trig in sorted(det.get(rowname, {}), key=lambda t: (t != "probe", t == "judge")):
                 m = det.get(rowname, {}).get(trig)
                 if m:
-                    L.append(f"{rowname} & {trig} & {_f(m.get('auroc'))} & {m['precision']:.3f} & {m['recall']:.3f} & "
+                    L.append(f"{rowname} & {trig.replace('_', ' ')} & {_f(m.get('auroc'))} & {m['precision']:.3f} & {m['recall']:.3f} & "
                              f"{m['f05']:.3f} & {_f(m['fpr'])} \\\\")
         L += [r"\bottomrule", r"\end{tabular}", ""]
     return "\n".join(L)
@@ -541,8 +543,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", required=True)
     ap.add_argument("--probe-dir", default=None)
+    ap.add_argument("--probe-mode", default="shared", choices=["shared", "dedicated"])
     args = ap.parse_args()
-    evaluate(args.out, args.probe_dir)
+    evaluate(args.out, args.probe_dir, args.probe_mode)
 
 
 if __name__ == "__main__":

@@ -163,13 +163,21 @@ def main():
     ap.add_argument("--rerank-pool", type=int, default=20, help="dense candidates re-ranked by the cross-encoder (v2)")
     ap.add_argument("--rounds", type=int, default=2, choices=[1, 2], help="max restarts per question")
     ap.add_argument("--reuse-from", default=None, help="earlier run dir: reuse its eval set, s0, judge, features")
+    ap.add_argument("--probe-mode", default="shared", choices=["shared", "dedicated"],
+                    help="shared: one probe + one τ for both hops (main); dedicated: hop-1 and hop-2 probes")
     args = ap.parse_args()
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     if args.reuse_from:
         src = Path(args.reuse_from)
-        for pat in REUSABLE:
+        prev = json.loads((src / "run_args.json").read_text()) if (src / "run_args.json").exists() else {}
+        pats = list(REUSABLE)
+        if prev.get("repair", "v1") == args.repair:                  # restarts depend on the repair only
+            pats += ["restarts.jsonl", "restarts.shard*.jsonl"]
+            if prev.get("probe_mode", "dedicated") == args.probe_mode:  # round 2 also depends on the probe
+                pats += ["rescore.jsonl", "rescore.shard*.jsonl", "restarts2.jsonl", "restarts2.shard*.jsonl"]
+        for pat in pats:
             for p in src.glob(pat):
                 dst = out / p.name
                 if dst.exists():
@@ -228,8 +236,8 @@ def main():
         from src.pipeline.generation import load_model
         from src.pipeline.probes import ProbeBundle
         model, tok = load_model(args.model, token)
-        probes = ProbeBundle(probe_dir)
-        print(f"[run] probe layers {probes.layer}  thresholds {probes.tau}")
+        probes = ProbeBundle(probe_dir, mode=args.probe_mode)
+        print(f"[run] probe mode {args.probe_mode}: layers {probes.layer}  thresholds {probes.tau}")
 
     # ── s0: monitored trajectories ───────────────────────────────────────────
     s0_path = out / f"s0{sfx}.jsonl"
@@ -418,7 +426,7 @@ def main():
     if "parity" in stages:
         import torch
         from src.pipeline.probes import ProbeBundle
-        pb = probes or ProbeBundle(probe_dir)
+        pb = probes or ProbeBundle(probe_dir, mode=args.probe_mode)
         repro = [it for it in items if it["dataset"] == "2wiki" and s0_all.get(it["uid"], {}).get("reproduced")]
         repro = repro[:200]
         res = dict(n_2wiki_s0=sum(1 for it in items if it["dataset"] == "2wiki" and it["uid"] in s0_all),
@@ -453,7 +461,7 @@ def main():
     # ── evaluate ─────────────────────────────────────────────────────────────
     if "evaluate" in stages:
         from src.pipeline.evaluate import evaluate
-        evaluate(out, probe_dir)
+        evaluate(out, probe_dir, args.probe_mode)
 
 
 if __name__ == "__main__":
