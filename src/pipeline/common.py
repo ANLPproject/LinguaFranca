@@ -55,6 +55,15 @@ SETTINGS = {
     ),
 }
 
+# TF-IDF counterfactuals (generate_counterfactuals_tfidf.py, kaggle/04), pinned to their upload commit.
+# Used by causal_patching.py and as an evaluation stratum; never for probe training.
+CF_V1 = dict(
+    file="tfidf_distractor_rag/cf_v1/counterfactuals.jsonl",
+    aliases="tfidf_distractor_rag/cf_v1/aliases.json",
+    hs_prefix="tfidf_distractor_rag/cf_v1/hidden_states",
+    revision="128611a10fa414db77e2e7bcab5f9fde1c734eae",
+)
+
 HEDGE_KEYWORDS = ["no information", "no mention", "not mentioned", "no relevant information",
                   "not found", "cannot find", "does not mention"]
 
