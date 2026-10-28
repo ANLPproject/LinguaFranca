@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 SPARQL_ENDPOINT = "https://query.wikidata.org/sparql"
 _HEADERS = {
     "Accept": "application/sparql-results+json",
-    "User-Agent": "LinguaFranca-research/1.0 (contact: research@example.com)",
+    "User-Agent": "LinguaFranca-research/1.0 (https://github.com/ANLPproject/LinguaFranca; student NLP project)",
 }
 
 # SPARQL template: finds all English-language aliases for an entity whose
@@ -52,10 +52,11 @@ LIMIT 30
 # Single-entity query
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _query_wikidata(entity_name: str, timeout: int = 12, max_retries: int = 3) -> list[str]:
+def _query_wikidata(entity_name: str, timeout: int = 12, max_retries: int = 3) -> Optional[list[str]]:
     """
     Query Wikidata for all English aliases of `entity_name`.
-    Returns an empty list on any error.
+    Returns a list (empty if the entity simply has no aliases) on success and None if every attempt FAILED
+    (network error, rate limit, ...), so callers can tell "no aliases" from "lookup failed".
     """
     query = _SPARQL_TEMPLATE.format(entity=entity_name.replace('"', '\\"'))
     for attempt in range(max_retries):
@@ -77,7 +78,7 @@ def _query_wikidata(entity_name: str, timeout: int = 12, max_retries: int = 3) -
                 time.sleep(2 ** attempt)
             else:
                 logger.debug("Wikidata query failed for %r: %s", entity_name, exc)
-    return []
+    return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -135,8 +136,13 @@ def build_alias_table(
         return existing
 
     logger.info("Querying Wikidata for %d new entities…", len(to_query))
+    failed: list[str] = []
     for entity in tqdm(to_query, desc="Wikidata aliases"):
-        existing[entity] = _query_wikidata(entity)
+        result = _query_wikidata(entity)
+        if result is None:                      # failed lookup: do NOT cache it as "no aliases"; retried on the next run
+            failed.append(entity)
+        else:
+            existing[entity] = result
         time.sleep(rate_limit_sec)
 
     # Save merged table
@@ -145,6 +151,12 @@ def build_alias_table(
         json.dump(existing, f, indent=2, ensure_ascii=False)
 
     logger.info("Alias table saved to %s  (%d entities)", cache_path, len(existing))
+    if failed:
+        logger.warning("%d of %d Wikidata lookups FAILED and were not cached (e.g. %s). Check the network / re-run.",
+                       len(failed), len(to_query), failed[:3])
+        if len(failed) > 0.5 * len(to_query):
+            raise RuntimeError(f"Wikidata alias lookup failed for {len(failed)}/{len(to_query)} entities; "
+                               "refusing to continue with an (almost) empty alias table. Is Internet on?")
     return existing
 
 
