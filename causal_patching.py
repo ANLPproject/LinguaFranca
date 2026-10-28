@@ -1,5 +1,5 @@
 """
-causal_patching.py  (Phase 4, v3)
+causal_patching.py  (Phase 4, v4)
 ─────────────────────────────────
 Activation patching on (clean, counterfactual) minimal pairs, plus a direct
 link to the hop-1 probe.
@@ -14,7 +14,7 @@ History
   and counterfactual prompts were generated on different days, the prompts
   also differ at ONE token near the start, so that "span" covered ~1,000
   tokens (nearly the whole prompt).  Its Experiment-A numbers are invalid.
-* v3 (this file): the date token of the CF prompt is set to the clean prompt's
+* v3/v4 (this file; RESULT_VERSION = 4): the date token of the CF prompt is set to the clean prompt's
   date token, so the two prompts differ ONLY in the swapped entity (a true
   minimal pair); the entity span is those 2-11 tokens; a "tail" condition, a
   length-matched donor control and a probe link (Experiment C) were added.

@@ -20,8 +20,8 @@ The trajectories, judge scores and first-round restarts are identical across the
 | first-stage condition | share of questions |
 |---|---|
 | both gold paragraphs kept | 41 % (203 / 500) |
-| only the hop-1 paragraph kept | 25 % (123) |
-| only the hop-2 paragraph kept | 33 % (165) |
+| only the hop-1 paragraph kept | 56 % (281) |
+| only the hop-2 paragraph kept | 1 % (7) |
 | neither kept | 2 % (9) |
 
 So **306 gold paragraphs are missing** from the 500 prompts. (The earlier "gold only" setting was never used: Phase 1's gold filter silently failed, so the main Phase 1 data had all 10 paragraphs. See `imppoints.md` §1.)

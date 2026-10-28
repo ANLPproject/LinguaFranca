@@ -18,10 +18,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 FILES = [
     "lf_common.py", "lf_models.py", "kaggle_helpers.py",
-    "advanced_probing.py", "evaluate_saved_probe.py", "bootstrap_confident_wrong.py",
+    "advanced_probing.py", "lf_probe_suite.py", "evaluate_saved_probe.py", "bootstrap_confident_wrong.py",
     "evaluate_llm_baseline.py", "causal_patching.py",
     "scripts/make_canonical_dataset.py",
     "phase1_dataset/__init__.py", "phase1_dataset/hop_rules.py",
+    "src/__init__.py", "src/pipeline/__init__.py", "src/pipeline/common.py",
     "data/canonical/augmented_v2.jsonl", "data/canonical/augmented_v2.stats.json",
     "data/canonical/hop1_probe_layer10.npz", "data/canonical/phase4_reference_hop1_L10.npz",
 ]
@@ -43,7 +44,7 @@ def main():
                     z.write(p, p.relative_to(ROOT).as_posix())
         z.writestr("BUNDLE_README.txt",
                    "LinguaFranca Kaggle bundle. Upload this zip as a Kaggle Dataset and attach it to the\n"
-                   "notebooks in kaggle/ (01_probing, 02_llm_judge, 03_causal_patching).\n")
+                   "notebooks in kaggle/ (01_probing, 02_llm_judge, 03_causal_patching, 04_probe_suite).\n")
     print(f"wrote {out} ({out.stat().st_size / 1e6:.1f} MB)")
 
 

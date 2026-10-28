@@ -21,6 +21,7 @@ We test whether a **lightweight probe on the model's hidden states** can detect 
 | 2–3 | Hidden-state probes, baselines, controls | `advanced_probing.py`, `evaluate_saved_probe.py`, `bootstrap_confident_wrong.py`, `lf_common.py` | `kaggle/01_probing.ipynb` (CPU) |
 | 3 | LLM-as-judge text baseline (same rows as the probe) | `evaluate_llm_baseline.py` | `kaggle/02_llm_judge.ipynb` (GPU) |
 | 4 | Causal validation (activation patching) | `causal_patching.py`, `lf_models.py` | `kaggle/03_causal_patching.ipynb` (GPU) |
+| 2–3 (suite) | Logistic regression vs linear SVM vs MLP on all 28 layers, both settings, one protocol, reproduction check against the old run | `lf_probe_suite.py`, `tests/test_probe_suite.py` | `kaggle/04_probe_suite.ipynb` (CPU; upload `kaggle_upload/probe_suite_bundle.zip` from `scripts/make_probe_suite_bundle.py`) |
 | 5 | Probe-triggered Naive-Restart RAG + Doctor-RAG-style baseline + end-to-end evaluation | `src/pipeline/` | `kaggle/pipeline_phase3_5.ipynb` (GPU) |
 
 ---
@@ -148,7 +149,7 @@ All systems share the **same model, prompt and repair**. Only *when* the repair 
 - **Detection:** probe AUROC ≈ 0.91 vs 0.57–0.68 for the judge. The probe finds the first failing hop 72% of the time; the judge, 25%.
 - **Probe vs judge accuracy:** significantly better on 2Wiki (+5.6 points, CI [+2.2, +9.2]; +9.6 with 2 restarts). Not significant on HotpotQA (CI [−0.8, +6.4]).
 - **Cost:** flags failures **3× earlier** (52 vs 168 tokens), **~40% fewer tokens**; one probe check ≈ 10 ms vs ≈ 740 ms for the judge.
-- **Where it helps:** when a gold paragraph was missing, accuracy rises from 15% → 42% (only the hop-1 paragraph present) and 8% → 35% (only hop-2), with a single restart.
+- **Where it helps:** when exactly one gold paragraph was missing (288 of 500 questions), accuracy rises from 10.8% → 37.5% with one restart (43.4% with two; judge 28.5%); when both are present it is ~unchanged (67% → 69%). Note: the earlier split into "only hop-1" / "only hop-2" used alphabetical title order, not hop order, and is retracted. In true hop order the missing paragraph is almost always the hop-2 one (see `outputs/pipeline/tfidf/diagnostics.md`); per-hop numbers come from re-running `evaluate` after `scripts/remap_eval_conditions.py`.
 - **Retrieval without a trigger does not help:** it fixes and breaks answers at about the same rate.
 
 ### Why the absolute accuracy looks low

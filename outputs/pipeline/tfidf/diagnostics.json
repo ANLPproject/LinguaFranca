@@ -1,0 +1,152 @@
+{
+ "condition_all": {
+  "both_present": 1599,
+  "only_hop1_passage": 2263,
+  "neither": 92,
+  "only_hop2_passage": 46
+ },
+ "condition_test": {
+  "only_hop1_passage": 450,
+  "both_present": 323,
+  "neither": 17,
+  "only_hop2_passage": 10
+ },
+ "hop_order_method": {
+  "question": 3906,
+  "bridge_entity": 92,
+  "FALLBACK_alphabetical": 2
+ },
+ "rates": {
+  "hop1": [
+   139,
+   798
+  ],
+  "hop2": [
+   512,
+   788
+  ],
+  "both_generated": 788,
+  "cascading": 99,
+  "hop2_fail_among_both": 512,
+  "hop2_fail_given_hop1_ok": [
+   413,
+   651
+  ]
+ },
+ "hop2_by_cond": {
+  "both_present": [
+   126,
+   303
+  ],
+  "only_hop1_passage": [
+   284,
+   343
+  ],
+  "only_hop2_passage": [
+   3,
+   5
+  ],
+  "neither": [
+   0,
+   0
+  ]
+ },
+ "probes": {
+  "hop1": {
+   "n": 798,
+   "n_fail": 139,
+   "tau": 0.6978991898604877,
+   "auroc": 0.9333740898025131,
+   "auroc_conf": 0.9281565590497619,
+   "n_conf_fail": 116,
+   "r5": 0.6724137931034483,
+   "r10": 0.8189655172413793,
+   "recall_tau_conf": 0.5517241379310345
+  },
+  "hop2": {
+   "n": 788,
+   "n_fail": 512,
+   "tau": 0.7222539104845022,
+   "auroc": 0.909629047780797,
+   "auroc_conf": 0.9076125915536855,
+   "n_conf_fail": 465,
+   "r5": 0.5612903225806452,
+   "r10": 0.7225806451612903,
+   "recall_tau_conf": 0.8086021505376344
+  },
+  "hop12": {
+   "n": 1586,
+   "n_fail": 651,
+   "tau": 0.6389811437261312,
+   "auroc": 0.931138437779804,
+   "auroc_conf": 0.9283643358767384,
+   "n_conf_fail": 581,
+   "r5": 0.6970740103270223,
+   "r10": 0.810671256454389,
+   "recall_tau_conf": 0.774526678141136
+  }
+ },
+ "auroc_by_cond": {
+  "both_present/hop1": {
+   "n": 323,
+   "fails": 14,
+   "auroc": 0.9214054553860379
+  },
+  "both_present/hop2": {
+   "n": 317,
+   "fails": 133,
+   "auroc": 0.8955132396207911
+  },
+  "only_hop1_passage/hop1": {
+   "n": 449,
+   "fails": 105,
+   "auroc": 0.9022425249169436
+  },
+  "only_hop1_passage/hop2": {
+   "n": 448,
+   "fails": 360,
+   "auroc": 0.8734217171717171
+  },
+  "only_hop2_passage/hop1": {
+   "n": 9,
+   "fails": 4,
+   "auroc": 0.75
+  },
+  "only_hop2_passage/hop2": {
+   "n": 7,
+   "fails": 4,
+   "auroc": 1.0
+  },
+  "neither/hop1": {
+   "n": 17,
+   "fails": 16,
+   "auroc": 0.0625
+  },
+  "neither/hop2": {
+   "n": 16,
+   "fails": 15,
+   "auroc": 0.8666666666666667
+  }
+ },
+ "hop1_dissection": {
+  "restated_question": {
+   "n": 59,
+   "flagged": 33
+  },
+  "distractor_copy": {
+   "n": 47,
+   "flagged": 22
+  },
+  "pure_fabrication": {
+   "n": 10,
+   "flagged": 9
+  }
+ },
+ "baselines": {
+  "n": 1586,
+  "majority_acc": 0.5800756620428751,
+  "hop_index_auroc": 0.7460324454889673,
+  "tfidf_text_auroc": 0.8191580167123645,
+  "shared_probe_auroc": 0.931138437779804
+ }
+}

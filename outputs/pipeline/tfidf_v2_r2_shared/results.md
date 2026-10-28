@@ -1,5 +1,8 @@
 # Phase 3–5 results — setting `tfidf`
 
+> **Note (retracted rows):** the `only_p1` / `only_p2` rows below are an alphabetical split of titles, NOT hop order. Their union (n = 288) is exactly "one gold paragraph present". Re-run `scripts/remap_eval_conditions.py` + `evaluate` for per-hop rows.
+
+
 Items evaluated: 1000.  Main probe: one shared probe for both hops; layers {1: 10, 2: 10}, thresholds {1: 0.639, 2: 0.639} (F0.5-optimal on train-split CV).
 
 ## RQ1 — failure detection (2Wiki held-out test, live trajectories)

@@ -134,7 +134,7 @@ Final numbers: `outputs/pipeline/tfidf_v2_r2_shared/results.md`; paper-ready tex
 | Oracle trigger (1 restart) | 0.540 | – |
 
 * **Probe vs judge:** significant on 2Wiki (+5.6, CI [+2.2, +9.2]; ≤ 2 restarts +9.6, CI [+5.6, +13.4]); not significant on HotpotQA (+2.8, CI [−0.8, +6.4]).
-* **Gains come from missing evidence:** only hop-1 paragraph present 0.146 → 0.415 (0.488 with 2 restarts); only hop-2 paragraph 0.079 → 0.345 (0.394); both present ~unchanged. Blind always-retrieve fixes and breaks answers at similar rates.
+* **Gains come from missing evidence:** exactly one gold paragraph present (n = 288) 0.108 → 0.375 (0.434 with 2 restarts; judge 0.285); both present (n = 203) 0.670 → 0.690 (0.719 with 2). The earlier `only_p1` / `only_p2` split was alphabetical, not hop order, and is retracted: in true hop order the 500 eval questions are 203 both / 281 only-hop-1 / 7 only-hop-2 / 9 neither; per-hop accuracies need a re-run of `evaluate` after `scripts/remap_eval_conditions.py`. Blind always-retrieve fixes and breaks answers at similar rates.
 * **Cost:** flags failures after 52 vs 168 generated tokens (3.2× earlier), 41 % fewer processed tokens, one probe check ≈ 9.5 ms vs ≈ 740 ms for the judge; live latency 9.9 s (probe, ≤ 2 restarts) vs 10.1 s (judge, 1 restart).
 * **Ablations:** dedicated hop-1/hop-2 probes +1.2–2.4 pts. The original Naive Restart (repair v1) scores 0.464 / 0.556: the improved repair helps in domain (+3.2) but not OOD (−1.8). An accuracy-optimal τ restarts 92–97 % of questions for ≤ +3.6 pts, so F0.5 τ is the better trade-off.
 * **Validity checks:** live features = training features (cosine 0.99999); the cached evaluation matches the fully live system on 100 questions (100 % same trigger, restart count and correctness).
@@ -150,6 +150,6 @@ Doctor-RAG reports 81.3 % diagnosis accuracy with a distilled, fine-tuned diagno
 2. Counterfactuals: how and why — §1 (78 CFs, entity-not-in-context stratum).
 3. MLP vs logistic regression vs SVM — not in the v2 numbers; the old comparison script is in `legacy/generate_report_stats.py` (old labels — rerun before using).
 4. Doctor-RAG with a fine-tuned diagnoser (~80 %) — not reproduced; see §9 for how to position it.
-5. Inference savings vs Doctor-RAG — §8 (3.1× earlier detection, 40 % fewer tokens, 25 % lower latency).
-6. "Internal doubt" on the timeline — §8: the probe flags at ~54 generated tokens vs ~168 for the judge.
+5. Inference savings vs Doctor-RAG — §8 (3.2× earlier detection, 40 % fewer processed tokens; end-to-end latency is about equal: 9.9 s vs 10.1 s).
+6. "Internal doubt" on the timeline — §8: the probe flags at ~52 generated tokens vs ~168 for the judge.
 7. Probe accuracy on hedging vs confident failures — §3.
