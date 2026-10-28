@@ -41,7 +41,8 @@ SETTINGS = {
     "tfidf": dict(
         data_file="tfidf_distractor_rag/data/raw/2wikimultihopqa/augmented.jsonl",
         hs_prefix="tfidf_distractor_rag/data/hidden_states",
-        revision=None,
+        # Pinned to the 2026-10-21 upload the probes were trained on (later commits only add files).
+        revision="7ad8d6ebbb626db610194c280cfdf097f587b6e0",
         context_top_k=5,
     ),
     # Original Phase 1 setting: all 10 passages (2 gold + 8 distractors), pinned
