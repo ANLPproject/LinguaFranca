@@ -1,5 +1,8 @@
 # Phase 3–5 results — setting `tfidf`
 
+> **Correction (Oct 28):** the stored TF-IDF `retrieval_condition` labels were in *alphabetical* title order (the data predates the hop-order fix), so `only_p1` / `only_p2` below are **not** hop 1 / hop 2. In true hop order, the TF-IDF first stage almost always keeps the hop-1 paragraph: of the 500 2Wiki questions, 203 keep both, 282 miss the hop-2 paragraph, 6 miss the hop-1 paragraph, 9 miss both. The union of the two `only_*` rows (n = 288, "one gold paragraph missing") is still correct. Corrected per-hop tables: `outputs/pipeline/tfidf_v2_r2/results.md`, `outputs/pipeline/full_stats.md`. Accuracy and detection numbers are unaffected.
+
+
 Items evaluated: 1000.  Main probe: one shared probe for both hops; layers {1: 10, 2: 10}, thresholds {1: 0.639, 2: 0.639} (F0.5-optimal on train-split CV).
 
 ## RQ1 — failure detection (2Wiki held-out test, live trajectories)

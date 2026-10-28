@@ -25,7 +25,8 @@ from pathlib import Path
 
 import numpy as np
 
-from src.pipeline.common import answer_correct, detection_metrics, read_jsonl
+from src.pipeline.common import (answer_correct, detection_metrics, hop_order_condition, load_setting_examples,
+                                 read_jsonl)
 from src.pipeline.systems import judge_trigger, outcome, probe_trigger
 
 SYSTEMS = ["no_intervention", "probe_restart", "judge_restart", "always_retrieve", "oracle_restart"]
@@ -140,6 +141,21 @@ def evaluate(out, probe_dir=None, probe_mode: str = "shared") -> dict:
                      if k in s0[it["uid"]]["boundaries"] and s0[it["uid"]]["hop_text"][k])]
     print(f"[evaluate] {len(items)}/{len(items_all)} items have all outputs")
     _relabel(items, s0)
+    # The stored TF-IDF retrieval conditions are in alphabetical title order (generated before the hop-order
+    # fix), so only_p1 / only_p2 are not hop 1 / hop 2.  Recompute them in true hop order for 2Wiki items.
+    meta_setting = json.loads((Path(probe_dir) / "probes_meta.json").read_text())["setting"]
+    try:
+        by_id = {e["id"]: e for e in load_setting_examples(meta_setting)}
+    except Exception as e:                                         # noqa: BLE001
+        by_id = {}
+        print(f"[evaluate] cannot load the dataset to recompute hop-order conditions ({e.__class__.__name__})")
+    n_cond = 0
+    for it in items:
+        e = by_id.get(it.get("id"))
+        if it["dataset"] == "2wiki" and e is not None and e.get("gold_titles"):
+            it["retrieval_condition"] = hop_order_condition(e, it["context_titles"])
+            n_cond += 1
+    print(f"[evaluate] retrieval conditions recomputed in hop order for {n_cond} 2Wiki items")
 
     # Probe scores are recomputed from the saved live features with THIS probe bundle, so a run made with
     # an older (e.g. uncalibrated) bundle or the other probe mode is evaluated on the same scale as `tau`.

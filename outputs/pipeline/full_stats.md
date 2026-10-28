@@ -14,9 +14,9 @@ Every number below is computed from the run's output files (`scripts/full_stats.
 | → HotpotQA bridge / comparison questions | 404 / 96 |
 | Retrieval corpus (paragraphs) | 94,031 |
 
-- **all 4,000**: hop-1 failures 782 (19.6%); hop-2 failures 2620 (65.5%); first-stage condition {'both_present': 1599, 'only_p1': 963, 'only_p2': 1346, 'neither': 92}
-- **train**: hop-1 failures 641 (20.0%); hop-2 failures 2096 (65.5%); first-stage condition {'both_present': 1276, 'only_p1': 777, 'only_p2': 1072, 'neither': 75}
-- **test**: hop-1 failures 141 (17.6%); hop-2 failures 524 (65.5%); first-stage condition {'both_present': 323, 'only_p2': 274, 'only_p1': 186, 'neither': 17}
+- **all 4,000**: hop-1 failures 782 (19.6%); hop-2 failures 2620 (65.5%); first-stage condition {'both_present': 1594, 'only_hop1_paragraph': 2269, 'neither': 92, 'only_hop2_paragraph': 39, 'unresolved': 6}
+- **train**: hop-1 failures 641 (20.0%); hop-2 failures 2096 (65.5%); first-stage condition {'both_present': 1271, 'only_hop1_paragraph': 1817, 'neither': 75, 'only_hop2_paragraph': 32, 'unresolved': 5}
+- **test**: hop-1 failures 141 (17.6%); hop-2 failures 524 (65.5%); first-stage condition {'both_present': 323, 'only_hop1_paragraph': 452, 'neither': 17, 'only_hop2_paragraph': 7, 'unresolved': 1}
 
 **Probe training rows** (one row per labelled hop; the shared probe uses hop-1 and hop-2 rows together):
 
@@ -30,7 +30,7 @@ Every number below is computed from the run's output files (`scripts/full_stats.
 
 - Label source: {'phase1': 476, 'relabeled': 24, 'unavailable': 0}
 - First failing hop of the model's first answer: hop 1 86, hop 2 265, no failure 149
-- First-stage condition: {'only_p2': 165, 'both_present': 203, 'only_p1': 123, 'neither': 9}
+- First-stage condition: {'only_hop1_paragraph': 282, 'both_present': 203, 'neither': 9, 'only_hop2_paragraph': 6}
 
 ## 3. Failure detection on live trajectories (2Wiki) — confusion matrices
 
@@ -58,8 +58,8 @@ First failing hop localized correctly (on 351 failing trajectories): probe 72.4%
 |---|---|---|---|---|---|
 | both_present | 203 | 136 (67.0%) | 2 (1.0%) | 54 (26.6%) | 11 (5.4%) |
 | neither | 9 | 0 (0.0%) | 5 (55.6%) | 3 (33.3%) | 1 (11.1%) |
-| only_p1 | 123 | 18 (14.6%) | 32 (26.0%) | 52 (42.3%) | 21 (17.1%) |
-| only_p2 | 165 | 13 (7.9%) | 45 (27.3%) | 74 (44.8%) | 33 (20.0%) |
+| only_hop1_paragraph | 282 | 30 (10.6%) | 74 (26.2%) | 125 (44.3%) | 53 (18.8%) |
+| only_hop2_paragraph | 6 | 1 (16.7%) | 3 (50.0%) | 1 (16.7%) | 1 (16.7%) |
 | ALL | 500 | 167 (33.4%) | 84 (16.8%) | 183 (36.6%) | 66 (13.2%) |
 
 **hotpotqa, by retrieval condition:**

@@ -16,8 +16,8 @@ from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, ".")
-from src.pipeline.common import (answer_correct, canonical_split, hidden_state_ids,  # noqa: E402
-                                 load_setting_examples, read_jsonl)
+from src.pipeline.common import (answer_correct, canonical_split, context_titles, hidden_state_ids,  # noqa: E402
+                                 hop_order_condition, load_setting_examples, read_jsonl)
 
 HEDGE = re.compile(r"not (mentioned|specified|provided|given|available|stated|found|known)|no (information|mention|data)"
                    r"|unknown|cannot (be )?determin|can't|not enough|does not (mention|say|provide|specify)|n/a|^none$"
@@ -68,6 +68,11 @@ def main():
     ex = load_setting_examples("tfidf", hidden_state_ids("tfidf"))
     tr, te = canonical_split(ex)
     gold_titles = {e["id"]: e.get("gold_titles", []) for e in ex_all}
+    # first-stage conditions in TRUE hop order (the stored ones are alphabetical; see common.gold_titles_in_hop_order)
+    by_id = {e["id"]: e for e in ex_all}
+    for it in items.values():
+        if it["dataset"] == "2wiki" and it["id"] in by_id:
+            it["retrieval_condition"] = hop_order_condition(by_id[it["id"]], it["context_titles"])
     L = [f"# Complete statistics — Phases 3–5 (`{run.name}`, main probe: {R['probe_mode']})", "",
          "Every number below is computed from the run's output files (`scripts/full_stats.py`). "
          "Correct = token F1 ≥ 0.5 with the gold answer.", ""]
@@ -86,7 +91,7 @@ def main():
           f"| Retrieval corpus (paragraphs) | 94,031 |", ""]
     for name, idx in (("all 4,000", range(len(ex))), ("train", tr), ("test", te)):
         h1 = Counter(hop(ex[i], 1) for i in idx); h2 = Counter(hop(ex[i], 2) for i in idx)
-        cond = Counter(ex[i].get("retrieval_condition") for i in idx)
+        cond = Counter(hop_order_condition(ex[i], context_titles(ex[i]["context"])) for i in idx)
         L.append(f"- **{name}**: hop-1 failures {pct(h1[1], h1[0] + h1[1])}; hop-2 failures {pct(h2[1], h2[0] + h2[1])}; "
                  f"first-stage condition {dict(cond)}")
     L += ["", "**Probe training rows** (one row per labelled hop; the shared probe uses hop-1 and hop-2 rows together):", "",

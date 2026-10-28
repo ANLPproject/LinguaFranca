@@ -49,7 +49,7 @@ import numpy as np
 from src.pipeline.common import (EXTRA_JUDGES, MIRRORS, MODEL_NAME, SETTINGS, append_jsonl, context_titles, download_hidden_states,
                                  format_passages, hop_label, hop_text, load_setting_examples,
                                  prompt_from_template, prompt_with_evidence, raw_passages, read_jsonl,
-                                 repair_query, tfidf_rank, write_jsonl)
+                                 repair_query, tfidf_rank, write_jsonl, hop_order_condition)
 
 ALL_STAGES = ["probes", "evalset", "corpus", "s0", "judge", "restarts", "rescore", "restarts2", "force", "live",
               "parity", "judges", "evaluate"]
@@ -109,7 +109,8 @@ def build_eval_set(setting: str, out: Path, meta: dict, n_2wiki: int, n_hotpot: 
                           context_titles=context_titles(e["context"]), labels=labels,
                           gold_entities={str(k): graph.get(k, "") for k in (1, 2)},
                           first_fail=e.get("first_fail_hop"), stored_cot=e.get("generated_cot", ""),
-                          retrieval_condition=e.get("retrieval_condition", "all_passages")))
+                          retrieval_condition=(hop_order_condition(e, context_titles(e["context"]))
+                                               if e.get("gold_titles") else "all_passages")))
     template = pool[0]["prompt"]
     hot_passages = []
     for rec in load_hotpot(n_hotpot, seed):

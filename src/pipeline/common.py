@@ -228,6 +228,42 @@ def repair_query(question: str, hops: dict, k: int, repair: str = "v2") -> str:
     return f"{question} {h}".strip()
 
 
+def gold_titles_in_hop_order(example: dict):
+    """
+    (hop-1 title, hop-2 title) of a 2Wiki example, or None if it cannot be resolved.
+
+    The stored `gold_titles` / `retrieval_condition` of the TF-IDF data were generated before the
+    hop-order fix (commit 687b983) and are in ALPHABETICAL order, so `only_p1` / `only_p2` do not
+    mean hop 1 / hop 2.  Here the hop-2 paragraph is the one about the bridge entity (the gold
+    entity of hop 1, e.g. "Wallace Fox"); the hop-1 paragraph is the other one (e.g. "The Great Mike").
+    Fallback: the hop-1 paragraph is the gold title that appears in the question.
+    """
+    g = list(dict.fromkeys(example.get("gold_titles") or []))
+    graph = example.get("reasoning_graph") or []
+    if len(g) != 2 or not graph:
+        return None
+    base = lambda t: normalize_answer(re.sub(r"\s*\(.*?\)\s*", " ", t))  # noqa: E731  "X (director)" -> "x"
+    bridge = normalize_answer(graph[0].get("gold_entity", ""))
+    hit = [t for t in g if base(t) and bridge and (base(t) == bridge or base(t) in bridge or bridge in base(t))]
+    if len(hit) == 1:
+        return (g[1] if hit[0] == g[0] else g[0]), hit[0]
+    q = normalize_answer(example.get("question", ""))
+    in_q = [t for t in g if base(t) and base(t) in q]
+    if len(in_q) == 1:
+        return in_q[0], (g[1] if in_q[0] == g[0] else g[0])
+    return None
+
+
+def hop_order_condition(example: dict, titles_in_prompt) -> str:
+    """First-stage retrieval condition in true hop order."""
+    order = gold_titles_in_hop_order(example)
+    if order is None:
+        return "unresolved"
+    present = set(titles_in_prompt)
+    return {(True, True): "both_present", (True, False): "only_hop1_paragraph",
+            (False, True): "only_hop2_paragraph", (False, False): "neither"}[(order[0] in present, order[1] in present)]
+
+
 def parse_answer(text: str) -> str:
     m = _ANSWER_RE.search(text or "")
     return m.group(1).strip() if m else ""

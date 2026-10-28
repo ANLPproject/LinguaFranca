@@ -20,11 +20,11 @@ The trajectories, judge scores and first-round restarts are identical across the
 | first-stage condition | share of questions |
 |---|---|
 | both gold paragraphs kept | 41 % (203 / 500) |
-| only the hop-1 paragraph kept | 25 % (123) |
-| only the hop-2 paragraph kept | 33 % (165) |
+| only the hop-1 paragraph kept (hop-2 paragraph missing) | 56 % (282) |
+| only the hop-2 paragraph kept (hop-1 paragraph missing) | 1 % (6) |
 | neither kept | 2 % (9) |
 
-So **306 gold paragraphs are missing** from the 500 prompts. (The earlier "gold only" setting was never used: Phase 1's gold filter silently failed, so the main Phase 1 data had all 10 paragraphs. See `imppoints.md` §1.)
+So **306 gold paragraphs are missing** from the 500 prompts — almost all of them hop-2 paragraphs: the question names the hop-1 entity, so TF-IDF finds that paragraph, but not the paragraph about the bridge entity. (Conditions are in true hop order; the stored `only_p1`/`only_p2` labels of the TF-IDF data are alphabetical and are recomputed by `evaluate`.) (The earlier "gold only" setting was never used: Phase 1's gold filter silently failed, so the main Phase 1 data had all 10 paragraphs. See `imppoints.md` §1.)
 
 **2. The "extra" evidence for a restart comes from a separate retrieval corpus.** It stands in for Wikipedia and is built once per run by `retriever.build_corpus()`:
 

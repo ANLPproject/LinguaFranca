@@ -1,6 +1,7 @@
 # Phase 3–5 results — setting `tfidf`
 
 Items evaluated: 1000.  Main probe: one shared probe for both hops; layers {1: 10, 2: 10}, thresholds {1: 0.639, 2: 0.639} (F0.5-optimal on train-split CV).
+Answers forced from hops 1-2 after hitting the token cap without <answer>: none.
 
 ## RQ1 — failure detection (2Wiki held-out test, live trajectories)
 
@@ -43,8 +44,8 @@ Accuracy by first-stage retrieval condition:
 |---|---|---|---|---|---|---|---|---|---|---|
 | both_present | 203 | 0.670 | 0.690 | 0.680 | 0.635 | 0.714 | 0.700 | 0.690 | 0.700 | 0.724 |
 | neither | 9 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.111 | 0.000 | 0.556 |
-| only_p1 | 123 | 0.146 | 0.415 | 0.301 | 0.187 | 0.463 | 0.472 | 0.309 | 0.439 | 0.488 |
-| only_p2 | 165 | 0.079 | 0.345 | 0.273 | 0.121 | 0.412 | 0.400 | 0.297 | 0.358 | 0.424 |
+| only_hop1_paragraph | 282 | 0.106 | 0.376 | 0.287 | 0.135 | 0.433 | 0.433 | 0.305 | 0.394 | 0.454 |
+| only_hop2_paragraph | 6 | 0.167 | 0.333 | 0.167 | 0.833 | 0.500 | 0.333 | 0.167 | 0.333 | 0.333 |
 
 ## RQ3 — end-to-end accuracy, hotpotqa
 
