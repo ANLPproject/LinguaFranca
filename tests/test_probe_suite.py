@@ -61,6 +61,23 @@ def main():
         out = tmp / "out" / "synthetic"
         for f in ("summary.md", "cells.csv", "selected.json", "cells.jsonl", "tuning.json", "info.json"):
             assert (out / f).exists(), f
+        # saved probes: one per (model, task) at the selected layer; reloading reproduces the stored test scores
+        by_cell = {(c["model"], c["task"], c["layer"]): c for c in R["cells"]}
+        tr0, te0 = canonical_split(examples)
+        for r in final:
+            base = out / "probes" / f"{r['model']}_{r['task']}_L{r['layer']}"
+            assert base.with_suffix(".joblib").exists() and base.with_suffix(".json").exists(), base
+            score, meta = S.load_probe(base.with_suffix(".joblib"))
+            assert meta["layer"] == r["layer"] and meta["task"] == r["task"] and meta["feature_dim"] == D
+            tem = R["masks"][r["task"]][1]
+            Xte = R["X"][np.flatnonzero(tem), r["layer"]].astype(np.float32)
+            ref = np.array(by_cell[(r["model"], r["task"], r["layer"])]["test_scores"])
+            assert np.allclose(score(Xte), ref, atol=1e-4), (r["model"], r["task"])
+            if r["model"] in ("lr_default", "lr", "svm"):
+                with np.load(base.with_suffix(".npz")) as z:        # plain-array export gives the same scores
+                    raw = ((Xte - z["mean"]) / z["scale"]) @ z["coef"] + z["intercept"]
+                port = raw if r["model"] == "svm" else 1 / (1 + np.exp(-raw))
+                assert np.allclose(port, ref, atol=1e-3), ("npz", r["model"], r["task"])
         n_cells = len(R["cells"])
         assert n_cells == len(S.ALL_MODELS) * 3 * N_LAYERS, n_cells
         # 3. never-generated hop dropped

@@ -115,7 +115,27 @@ rc = kh.run_with_retries([sys.executable, "lf_probe_suite.py", "--setting", "ful
 print("main run exit code:", rc)
 """),
     code(r"""
-# STEP 6 - FINAL (always runs): show and package whatever exists.
+# STEP 6 - upload the trained probes + metrics to Hugging Face, into a NEW folder (nothing existing is touched).
+# Needs a Kaggle secret HF_TOKEN with WRITE access (Add-ons -> Secrets). Set UPLOAD = False to skip.
+UPLOAD = True
+HF_PREFIX = "probe_suite_v1"          # a new folder in AnishRacherla/LinguaFranca-Phase3; the script refuses existing folders
+if UPLOAD:
+    tok = kh.hf_login()
+    if not tok:
+        print("No HF_TOKEN secret found: skipping the upload. Add a WRITE token as secret HF_TOKEN and run this cell again.")
+    else:
+        for s in ("full10", "tfidf"):
+            if not (OUT / s / "probes").exists():
+                print(f"[skip] no probes saved for {s}")
+                continue
+            kh.run([sys.executable, "scripts/upload_probes_to_hf.py", "--src", str(OUT / s), "--prefix", f"{HF_PREFIX}/{s}",
+                    "--include", "probes/*", "summary.md", "selected.json", "cells.csv", "info.json", "tuning.json",
+                    "rows.jsonl", "auroc_by_layer.png", "--yes",
+                    "--note", f"Probe suite ({s} setting): logistic regression / linear SVM / MLP, selected layer per model and task "
+                              f"(max train-split CV AUROC). See summary.md for every metric."], f"upload_{s}")
+"""),
+    code(r"""
+# STEP 7 - FINAL (always runs): show and package whatever exists.
 for s in ("full10", "tfidf"):
     kh.show(OUT / s / "summary.md")
 kh.package(OUT, "probe_suite_results")

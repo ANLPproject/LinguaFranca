@@ -291,8 +291,8 @@ def run_setting(setting, examples, hs_dir, args, out_root):
             for hp in grids[mname]:
                 aucs = []
                 for L in tune_layers:
-                    p = oof_scores(KIND[mname], hp, X[trm][:, L].astype(np.float32), A["y"][trm], A["group"][trm],
-                                   n_jobs, args.mlp_epochs)
+                    p = oof_scores(KIND[mname], hp, X[np.flatnonzero(trm), L].astype(np.float32), A["y"][trm],
+                                   A["group"][trm], n_jobs, args.mlp_epochs)
                     nat = ~A["cf"][trm]
                     aucs.append(metrics(A["y"][trm][nat], p[nat], 0.0, extra=False).get("auroc", float("nan")))
                 board.append((float(np.nanmean(aucs)), hp))
@@ -348,6 +348,46 @@ def run_setting(setting, examples, hs_dir, args, out_root):
 # ─────────────────────────────────────────────────────────────────────────────
 # Report
 # ─────────────────────────────────────────────────────────────────────────────
+
+def save_probe(pdir, mdl, setting, mname, task, layer, tau, info, cell):
+    """Save a trained probe: <model>_<task>_L<layer>.joblib (+ .npz with plain arrays for lr / svm)."""
+    import joblib
+    import sklearn
+    pdir = Path(pdir)
+    pdir.mkdir(parents=True, exist_ok=True)
+    base = f"{mname}_{task}_L{layer}"
+    meta = dict(setting=setting, model=mname, kind=mdl.kind, params=mdl.p, task=task, hops=list(TASKS[task]),
+                layer=int(layer), decision_threshold=float(mdl.thr), tau_cv_f05=float(tau),
+                score="P(failure) (probability)" if mdl.kind != "svm" else "SVM margin (decision_function), threshold 0",
+                feature="mean-pooled hidden state of the hop's tokens at the output of block `layer` (float32)",
+                feature_dim=int(info["d"]), trained_on="train split of lf_common.canonical_split (GroupShuffleSplit 80/20, "
+                "seed 42), rows of hops " + str(TASKS[task]), n_train_examples=info["n_train_examples"],
+                sklearn_version=sklearn.__version__, test_auroc=cell["test"]["all"].get("auroc"),
+                cv_auroc_natural=cell["cv"].get("natural", cell["cv"]["all"]).get("auroc"))
+    est = {"meta": meta}
+    if mdl.kind == "mlp":
+        est.update(scaler=mdl.sc, mlp=mdl.m)
+    else:
+        est["pipeline"] = mdl.m
+        sc, clf = mdl.m.steps[0][1], mdl.m.steps[-1][1]
+        np.savez(pdir / f"{base}.npz", mean=sc.mean_, scale=sc.scale_, coef=clf.coef_[0], intercept=clf.intercept_,
+                 threshold=mdl.thr, layer=layer)
+    joblib.dump(est, pdir / f"{base}.joblib")
+    (pdir / f"{base}.json").write_text(json.dumps(meta, indent=1, default=jdump))
+
+
+def load_probe(path):
+    """Load a saved probe; returns score(X) -> failure score (X: [n, feature_dim] pooled states) and its meta."""
+    import joblib
+    est = joblib.load(path)
+    meta = est["meta"]
+    if "pipeline" in est:
+        pipe = est["pipeline"]
+        if meta["kind"] == "svm":
+            return (lambda X: pipe.decision_function(np.nan_to_num(np.asarray(X, dtype=np.float32)))), meta
+        return (lambda X: pipe.predict_proba(np.nan_to_num(np.asarray(X, dtype=np.float32)))[:, 1]), meta
+    return (lambda X: est["mlp"].predict_proba(est["scaler"].transform(np.nan_to_num(np.asarray(X, dtype=np.float32))))[:, 1]), meta
+
 
 def best_f05(y, s):
     y = np.asarray(y).astype(int)
@@ -449,16 +489,20 @@ def report(R, args, old_json=None):
             ci = grouped_bootstrap_ci(yte, s_te, A["group"][tem], "auroc", n_boot=args.n_boot)
             # shuffled-label control at the selected layer
             kind, hp = KIND[m], c["params"]
+            X_tr_L = X[np.flatnonzero(trm), L].astype(np.float32)           # only this layer is copied
+            X_te_L = X[np.flatnonzero(tem), L].astype(np.float32)
             shuf_runs = []
             for seed in range(5):                                          # mean of 5 permutations (one is noisy)
                 ys = np.random.RandomState(seed).permutation(A["y"][trm])
-                ctrl = Model(kind, hp, mlp_epochs=args.mlp_epochs).fit(X[trm][:, L].astype(np.float32), ys)
-                shuf_runs.append(metrics(yte, ctrl.score(X[tem][:, L].astype(np.float32)), ctrl.thr,
-                                         extra=False).get("auroc"))
+                ctrl = Model(kind, hp, mlp_epochs=args.mlp_epochs).fit(X_tr_L, ys)
+                shuf_runs.append(metrics(yte, ctrl.score(X_te_L), ctrl.thr, extra=False).get("auroc"))
             shuf = float(np.nanmean(shuf_runs))
             # operating point at the CV-F0.5 threshold (OOF scores of the train split)
             oof = np.array(c["oof"])
             tau = best_f05(A["y"][trm], oof)
+            # the probe itself: refit on the full train split at the selected layer and save it (uploadable to HF)
+            final_model = Model(kind, hp, mlp_epochs=args.mlp_epochs).fit(X_tr_L, A["y"][trm])
+            save_probe(out / "probes", final_model, setting, m, task, L, tau, info, c)
             at_tau = metrics(yte, s_te, tau)
             t = c["test"]["all"]
             tc = c["test"]["confident_only"]
