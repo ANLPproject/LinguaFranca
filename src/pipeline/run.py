@@ -17,6 +17,8 @@ judge     post-hoc LLM judge on hop 1 / hop 2                             (GPU)
 restarts  retrieval + restart for keys q / h1 / h2, batched               (GPU)
 rescore   probe + judge scores on the h1 / h2 restarts (second-round triggers)   (GPU, --rounds 2)
 restarts2 second retrieval + restart where a restart fails again, keys "h1>2" … (GPU, --rounds 2)
+force     an answer for every generation that hit the token cap without <answer> (GPU)
+judges    the same post-hoc judge with other models (--judge-models), on the same hops (GPU, T4 x2 for 7-8B)
 live      latency subset: truly live probe-halt-retrieve-restart, etc.   (GPU)
 parity    live probe features vs the stored Phase 1 features             (CPU)
 evaluate  metrics, tables, figures                                        (CPU)
@@ -44,15 +46,15 @@ from pathlib import Path
 
 import numpy as np
 
-from src.pipeline.common import (MODEL_NAME, SETTINGS, append_jsonl, context_titles, download_hidden_states,
+from src.pipeline.common import (EXTRA_JUDGES, MIRRORS, MODEL_NAME, SETTINGS, append_jsonl, context_titles, download_hidden_states,
                                  format_passages, hop_label, hop_text, load_setting_examples,
                                  prompt_from_template, prompt_with_evidence, raw_passages, read_jsonl,
                                  repair_query, tfidf_rank, write_jsonl)
 
-ALL_STAGES = ["probes", "evalset", "corpus", "s0", "judge", "restarts", "rescore", "restarts2", "live", "parity",
-              "evaluate"]
+ALL_STAGES = ["probes", "evalset", "corpus", "s0", "judge", "restarts", "rescore", "restarts2", "force", "live",
+              "parity", "judges", "evaluate"]
 REUSABLE = ["eval_set.jsonl", "hotpot_passages.jsonl", "s0.jsonl", "s0.shard*.jsonl", "judge.jsonl",
-            "judge.shard*.jsonl", "s0_feats", "parity.json", "corpus"]
+            "judge.shard*.jsonl", "judge__*.jsonl", "s0_feats", "parity.json", "corpus"]
 
 
 def safe(uid: str) -> str:
@@ -160,9 +162,13 @@ def main():
     ap.add_argument("--model", default=MODEL_NAME)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--repair", default="v2", choices=["v1", "v2"])
-    ap.add_argument("--rerank-pool", type=int, default=20, help="dense candidates re-ranked by the cross-encoder (v2)")
+    ap.add_argument("--rerank-pool", type=int, default=20, help="candidates re-ranked by the cross-encoder (v2)")
+    ap.add_argument("--retriever", default="dense", choices=["dense", "hybrid"],
+                    help="hybrid = dense + BM25 keyword search fused by reciprocal rank (finds exact names)")
     ap.add_argument("--rounds", type=int, default=2, choices=[1, 2], help="max restarts per question")
     ap.add_argument("--reuse-from", default=None, help="earlier run dir: reuse its eval set, s0, judge, features")
+    ap.add_argument("--judge-models", default=",".join(EXTRA_JUDGES),
+                    help="extra post-hoc judges (comma-separated HF ids; '' = none)")
     ap.add_argument("--probe-mode", default="shared", choices=["shared", "dedicated"],
                     help="shared: one probe + one τ for both hops (main); dedicated: hop-1 and hop-2 probes")
     args = ap.parse_args()
@@ -173,7 +179,8 @@ def main():
         src = Path(args.reuse_from)
         prev = json.loads((src / "run_args.json").read_text()) if (src / "run_args.json").exists() else {}
         pats = list(REUSABLE)
-        if prev.get("repair", "v1") == args.repair:                  # restarts depend on the repair only
+        same_repair = (prev.get("repair", "v1"), prev.get("retriever", "dense"), prev.get("top_k", 3)) ==             (args.repair, args.retriever, args.top_k)
+        if same_repair:                                             # restarts depend on the repair only
             pats += ["restarts.jsonl", "restarts.shard*.jsonl"]
             if prev.get("probe_mode", "dedicated") == args.probe_mode:  # round 2 also depends on the probe
                 pats += ["rescore.jsonl", "rescore.shard*.jsonl", "restarts2.jsonl", "restarts2.shard*.jsonl"]
@@ -230,7 +237,7 @@ def main():
         get_retriever()
 
     # ── model (GPU stages) ───────────────────────────────────────────────────
-    gpu_stages = {"s0", "judge", "restarts", "rescore", "restarts2", "live"} & set(stages)
+    gpu_stages = {"s0", "judge", "restarts", "rescore", "restarts2", "force", "live"} & set(stages)
     model = tok = probes = None
     if gpu_stages:
         from src.pipeline.generation import load_model
@@ -299,7 +306,8 @@ def main():
             print(f"[{tag}] {min(s + chunk, len(pending))}/{len(pending)} ({time.time() - t0:.0f}s)", flush=True)
 
     def retrieve(it, query, exclude):
-        hits, ms = get_retriever().search(query, args.top_k, exclude_titles=exclude, rerank_pool=pool)
+        hits, ms = get_retriever().search(query, args.top_k, exclude_titles=exclude, rerank_pool=pool,
+                                          hybrid=args.retriever == "hybrid")
         return hits, ms
 
     if "restarts" in stages:
@@ -371,9 +379,33 @@ def main():
                                     prompt=prompt_with_evidence(round1_prompt(it, parent), hits)))
         run_restarts(pending, r2_path, "restarts2")
 
+    # ── force: answers for generations that hit the token cap without <answer> ──
+    if "force" in stages:
+        from src.pipeline.generation import force_answers
+        f_path = out / f"forced{sfx}.jsonl"
+        done = done_uids(f_path, key=lambda r: (r["uid"], r["key"]))
+        mine_uids = {it["uid"] for it in mine}
+        r1 = {(r["uid"], r["key"]): r for r in merged(out, "restarts")}
+        todo = []                                            # (uid, key, generation prompt, text)
+        for uid in mine_uids & set(s0_all):
+            if not s0_all[uid]["answer"] and (uid, "s0") not in done:
+                todo.append((uid, "s0", by_uid[uid]["prompt"], s0_all[uid]["text"]))
+        for r in merged(out, "restarts") + merged(out, "restarts2"):
+            if r["uid"] not in mine_uids or r["answer"] or (r["uid"], r["key"]) in done or "retrieved" not in r:
+                continue
+            it = by_uid[r["uid"]]
+            base = it["prompt"] if ">" not in r["key"] else round1_prompt(it, r1[(r["uid"], r["key"].split(">")[0])])
+            todo.append((r["uid"], r["key"], prompt_with_evidence(base, r["retrieved"]), r["text"]))
+        print(f"[force] {len(todo)} generations without an <answer>")
+        for s in range(0, len(todo), 64):
+            part = todo[s:s + 64]
+            outs = force_answers(model, tok, [(p, t) for _, _, p, t in part], args.batch_size)
+            for (uid, key, _, _), o in zip(part, outs):
+                append_jsonl(f_path, dict(uid=uid, key=key, **o))
+
     # ── live latency / equivalence subset ────────────────────────────────────
     if "live" in stages:
-        from src.pipeline.generation import generate_monitored
+        from src.pipeline.generation import force_answers, generate_monitored
         from src.pipeline.systems import judge_trigger
         ret = get_retriever()
         j_all = {r["uid"]: r for r in merged(out, "judge")}
@@ -383,12 +415,18 @@ def main():
         for ds in ("2wiki", "hotpotqa"):
             subset += [it for it in mine if it["dataset"] == ds and it["uid"] in s0_all][: args.n_live // 2]
 
+        def finish(prompt, g):
+            """The final answer, forced from hops 1-2 if the generation never wrote <answer> (as in `force`)."""
+            if g["answer"] or "force" not in stages:
+                return g["answer"]
+            return force_answers(model, tok, [(prompt, g["text"])], 1)[0]["answer"]
+
         def seq_restart(it, query):
             t = time.perf_counter()
             hits, ms = retrieve(it, query, it["context_titles"])
-            g = generate_monitored(model, tok, prompt_with_evidence(it["prompt"], hits), None,
-                                   max_new_tokens=args.max_new_tokens, keep_pooled=False)
-            return dict(answer=g["answer"], text=g["text"], n_gen=g["n_gen"], retrieval_ms=ms,
+            prompt_r = prompt_with_evidence(it["prompt"], hits)
+            g = generate_monitored(model, tok, prompt_r, None, max_new_tokens=args.max_new_tokens, keep_pooled=False)
+            return dict(answer=finish(prompt_r, g), text=g["text"], n_gen=g["n_gen"], retrieval_ms=ms,
                         wall_ms=(time.perf_counter() - t) * 1000)
 
         for it in [it for it in subset if it["uid"] not in done]:
@@ -413,7 +451,7 @@ def main():
                 n_gen += g["n_gen"]
             rec["probe_restart"] = dict(stopped_at=first["stopped_at"], stops=stops, rounds=args.rounds,
                                         first_pass_text=first["text"], first_pass_n_gen=first["n_gen"],
-                                        answer=g["answer"], n_gen=n_gen, wall_ms=(time.perf_counter() - t) * 1000)
+                                        answer=finish(prompt, g), n_gen=n_gen, wall_ms=(time.perf_counter() - t) * 1000)
             rec["always_retrieve"] = seq_restart(it, it["question"])
             jk = judge_trigger(j_all.get(it["uid"]))
             if jk:
@@ -457,6 +495,47 @@ def main():
             print(f"[parity] {len(res['rows'])} hops: mean cos@probe layer "
                   f"{np.mean([r['cos_probe_layer'] for r in res['rows']]):.5f}, |Δp| mean {dp.mean():.4f} max {dp.max():.4f}")
         print(f"[parity] reproduced Phase 1 trajectory exactly: {res['n_reproduced']}/{res['n_2wiki_s0']}")
+
+    # ── judges: the post-hoc judge with other (larger) models, same hop texts ──
+    judge_models = [m.strip() for m in args.judge_models.split(",") if m.strip()]
+    if "judges" in stages and judge_models:
+        import gc
+        import shutil as _sh
+        import torch
+        from huggingface_hub.constants import HF_HUB_CACHE
+        from src.pipeline.generation import load_model
+        from src.pipeline.judge import Judge
+        model = tok = None                       # free the generator; judges load one at a time
+        gc.collect()
+        torch.cuda.empty_cache()
+        for name in judge_models:
+            j_path = out / f"judge__{safe(name)}{sfx}.jsonl"
+            done = done_uids(j_path)
+            todo = [it for it in mine if it["uid"] in s0_all and it["uid"] not in done]
+            if not todo:
+                continue
+            print(f"[judges] {name}: {len(todo)} items", flush=True)
+            try:
+                jm, jt = load_model(name, token, spread=True)
+            except Exception as e:                                         # noqa: BLE001
+                print(f"[judges] skipping {name}: {e.__class__.__name__}: {str(e)[:200]}")
+                continue
+            judge = Judge(jm, jt, prompt_date(items[0]["prompt"]) if "llama" in name.lower() else None)
+            t0 = time.time()
+            for n, it in enumerate(todo):
+                s0 = s0_all[it["uid"]]
+                rec = {"uid": it["uid"], "model": name}
+                for k in ("1", "2"):
+                    if k in s0["boundaries"] and s0["hop_text"][k]:
+                        rec[k] = judge.p_fail(it["context"], it["question"], s0["hop_text"][k])
+                append_jsonl(j_path, rec)
+                if n % 200 == 0:
+                    print(f"[judges] {name}: {n + 1}/{len(todo)} ({time.time() - t0:.0f}s)", flush=True)
+            del judge, jm, jt
+            gc.collect()
+            torch.cuda.empty_cache()
+            for repo in {name, *MIRRORS.get(name, [])}:                # free Kaggle disk for the next judge
+                _sh.rmtree(Path(HF_HUB_CACHE) / ("models--" + repo.replace("/", "--")), ignore_errors=True)
 
     # ── evaluate ─────────────────────────────────────────────────────────────
     if "evaluate" in stages:

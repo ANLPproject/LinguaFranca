@@ -24,12 +24,13 @@ phase1_features() re-implements the Phase 1 extraction, for parity tests.
 
 from __future__ import annotations
 
+import re
 import time
 
 import numpy as np
 import torch
 
-from src.pipeline.common import MODEL_MIRRORS, MODEL_NAME, hop_match, parse_answer
+from src.pipeline.common import MIRRORS, MODEL_NAME, hop_match, parse_answer
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -45,13 +46,16 @@ def _can_fetch(repo: str, token) -> bool:
         return False
 
 
-def load_model(name: str = MODEL_NAME, token: str | None = None):
-    """Greedy-only fp16 model on one GPU (or fp32 on CPU).  Falls back to an ungated mirror."""
+def load_model(name: str = MODEL_NAME, token: str | None = None, spread: bool = False):
+    """
+    Greedy-only fp16 model on one GPU (or fp32 on CPU).  Falls back to an ungated mirror.
+    spread=True places the layers over all visible GPUs (needed for 7-8B models on 16 GB T4s).
+    """
     import transformers
     from transformers import AutoModelForCausalLM, AutoTokenizer
     repo = name
     if not _can_fetch(name, token):
-        repo = next((m for m in MODEL_MIRRORS if _can_fetch(m, token)), None)
+        repo = next((m for m in MIRRORS.get(name, []) if _can_fetch(m, token)), None)
         if repo is None:
             raise RuntimeError(f"Cannot access {name} (accept the licence on huggingface.co) or any mirror.")
         print(f"[model] {name} not accessible with this token -> using mirror {repo} (same weights)")
@@ -61,7 +65,8 @@ def load_model(name: str = MODEL_NAME, token: str | None = None):
     tok = AutoTokenizer.from_pretrained(repo, token=token, padding_side="left")
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
-    model = AutoModelForCausalLM.from_pretrained(repo, token=token, device_map={"": 0} if cuda else None,
+    model = AutoModelForCausalLM.from_pretrained(repo, token=token,
+                                                 device_map=("auto" if spread else {"": 0}) if cuda else None,
                                                  **{dkw: torch.float16 if cuda else torch.float32})
     model.eval()
     gc = model.generation_config
@@ -230,6 +235,27 @@ def generate_batch(model, tok, prompts: list[str], max_new_tokens: int = 400, ba
                               n_prompt=int(enc.attention_mask[row].sum()))
         i += len(idx)
     return results
+
+
+def answer_forcing_prompt(prompt: str, text: str) -> str:
+    """
+    For a generation that never wrote <answer> (it kept adding <hopN> steps until the token cap):
+    keep the reasoning up to </hop2> (the questions have exactly two gold hops), or up to the last
+    closed hop if there is no hop 2, and open <answer> so the model writes only the answer.
+    """
+    m = hop_match(text, 2)
+    if m:
+        cut = m.end()
+    else:
+        ends = [x.end() for x in re.finditer(r"</hop\d+>", text, re.IGNORECASE)]
+        cut = ends[-1] if ends else len(text)
+    return prompt + text[:cut] + "\n<answer>"
+
+
+def force_answers(model, tok, pairs: list[tuple[str, str]], batch_size: int = 8, max_new_tokens: int = 32) -> list[dict]:
+    """[(prompt, text)] -> [{"answer", "n_gen"}]: the answer the model writes once <answer> is opened."""
+    outs = generate_batch(model, tok, [answer_forcing_prompt(p, t) for p, t in pairs], max_new_tokens, batch_size)
+    return [dict(answer=o["text"].split("</answer>")[0].strip(), n_gen=o["n_gen"]) for o in outs]
 
 
 @torch.inference_mode()

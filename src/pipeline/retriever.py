@@ -101,21 +101,34 @@ class DenseRetriever:
             passages = [json.loads(l) for l in f]
         return cls(passages, np.load(d / "embeddings.npy"), device)
 
-    def search(self, query: str, k: int = 3, exclude_titles=(), rerank_pool: int = 0) -> tuple[list[dict], float]:
+    def search(self, query: str, k: int = 3, exclude_titles=(), rerank_pool: int = 0,
+               hybrid: bool = False) -> tuple[list[dict], float]:
         """
         Top-k passages not already in the context.  Returns (passages, latency_ms).
-        rerank_pool > 0: take that many dense candidates and re-order them with a cross-encoder first.
+        hybrid: fuse the dense ranking with a BM25 keyword ranking (reciprocal-rank fusion), which
+                finds exact names ("William Franklyn") that embedding search confuses with similar ones.
+        rerank_pool > 0: take that many candidates and re-order them with a cross-encoder first.
         """
         t0 = time.perf_counter()
         q = self.encoder.encode([query], convert_to_numpy=True, normalize_embeddings=True).astype(np.float32)
         excl = set(exclude_titles)
-        n = max(k, rerank_pool) + len(excl) + 5
+        n = max(k, rerank_pool, 50 if hybrid else 0) + len(excl) + 5
         if self.index is not None:
             _, idx = self.index.search(q, n)
             idx = idx[0]
         else:
             idx = np.argsort(-(self.emb @ q[0]))[:n]
-        hits = [self.passages[i] for i in idx if i >= 0 and self.passages[i]["title"] not in excl]
+        dense = [int(i) for i in idx if i >= 0 and self.passages[i]["title"] not in excl]
+        if hybrid:
+            scores = self._bm25().scores(query)
+            top = np.argpartition(-scores, n)[:n]
+            lexical = [int(i) for i in top[np.argsort(-scores[top])] if self.passages[i]["title"] not in excl]
+            fused: dict[int, float] = {}
+            for ranking in (dense[:50], lexical[:50]):
+                for r, i in enumerate(ranking):
+                    fused[i] = fused.get(i, 0.0) + 1.0 / (60 + r + 1)
+            dense = sorted(fused, key=fused.get, reverse=True)
+        hits = [self.passages[i] for i in dense]
         if rerank_pool > 0:
             pool = hits[:rerank_pool]
             scores = self._reranker().predict([(query, f"{p['title']}: {p['text']}") for p in pool],
@@ -128,3 +141,32 @@ class DenseRetriever:
             from sentence_transformers import CrossEncoder
             self._ce = CrossEncoder(RERANK_MODEL, device=str(self.encoder.device))
         return self._ce
+
+    def _bm25(self):
+        if getattr(self, "_lex", None) is None:
+            self._lex = BM25([f"{p['title']}: {p['text']}" for p in self.passages])
+        return self._lex
+
+
+class BM25:
+    """Okapi BM25 (k1 = 1.2, b = 0.75) as a sparse matrix: scores = W[:, query terms] @ idf."""
+
+    def __init__(self, docs: list[str], k1: float = 1.2, b: float = 0.75):
+        from sklearn.feature_extraction.text import CountVectorizer
+        t0 = time.time()
+        self.cv = CountVectorizer(lowercase=True, token_pattern=r"(?u)\b\w+\b", stop_words="english")
+        tf = self.cv.fit_transform(docs).astype(np.float32).tocsr()
+        n_docs = tf.shape[0]
+        df = np.bincount(tf.indices, minlength=tf.shape[1])
+        self.idf = np.log(1 + (n_docs - df + 0.5) / (df + 0.5)).astype(np.float32)
+        dl = np.asarray(tf.sum(1)).ravel()
+        norm = k1 * (1 - b + b * dl / dl.mean())
+        tf.data = tf.data * (k1 + 1) / (tf.data + np.repeat(norm, np.diff(tf.indptr)))
+        self.w = tf.tocsc()
+        print(f"[retriever] BM25 index over {n_docs} paragraphs in {time.time() - t0:.0f}s")
+
+    def scores(self, query: str) -> np.ndarray:
+        terms = self.cv.transform([query]).indices
+        if len(terms) == 0:
+            return np.zeros(self.w.shape[0], dtype=np.float32)
+        return np.asarray(self.w[:, terms] @ self.idf[terms]).ravel()

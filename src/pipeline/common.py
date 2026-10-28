@@ -27,6 +27,11 @@ import numpy as np
 HF_REPO = "AnishRacherla/LinguaFranca-Phase3"
 MODEL_NAME = "meta-llama/Llama-3.2-3B-Instruct"
 MODEL_MIRRORS = ["unsloth/Llama-3.2-3B-Instruct"]      # same weights, ungated
+# Ungated mirrors (same weights) for every gated model the pipeline may load
+MIRRORS = {MODEL_NAME: MODEL_MIRRORS,
+           "meta-llama/Llama-3.1-8B-Instruct": ["unsloth/Llama-3.1-8B-Instruct", "unsloth/Meta-Llama-3.1-8B-Instruct"]}
+# The off-the-shelf judges of the standalone judge baseline (outputs/llm_judge), rerun inside the pipeline
+EXTRA_JUDGES = ["Qwen/Qwen2.5-3B-Instruct", "Qwen/Qwen2.5-7B-Instruct", "meta-llama/Llama-3.1-8B-Instruct"]
 GOLD_HOPS = (1, 2)
 SPLIT_SEED = 42
 
