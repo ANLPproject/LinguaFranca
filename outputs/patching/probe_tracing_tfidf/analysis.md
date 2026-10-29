@@ -110,3 +110,44 @@ Spearman across pairs at each block (SD of behavioural recovery in brackets; nea
 | 10 | 0.78 | 0.38 |
 | 11 | 0.51 | 0.23 |
 
+## Part 2a: robustness of Tests A/B to probe retrains (shared hop12 LR, natural train split)
+
+Natural AUROC on test hops 1+2 (seed questions of the pairs excluded). Test B = within-pair, within-block r, entity last token.
+
+| block | C | training sample | natural AUROC | Test A AUROC | Test B r [95% CI] |
+|---|---|---|---|---|---|
+| 10 | 0.001 | full | 0.936 | 0.897 | +0.46 [+0.38, +0.54] |
+| 10 | 0.01 | full | 0.942 | 0.928 | +0.38 [+0.30, +0.46] |
+| 10 | 0.1 | full | 0.929 | 0.919 | +0.30 [+0.22, +0.38] |
+| 10 | 1 | full | 0.921 | 0.911 | +0.28 [+0.19, +0.36] |
+| 10 | 0.01 | bootstrap 0 | 0.936 | 0.855 | +0.32 [+0.24, +0.40] |
+| 10 | 1 | bootstrap 0 | 0.922 | 0.847 | +0.20 [+0.12, +0.28] |
+| 10 | 0.01 | bootstrap 1 | 0.938 | 0.883 | +0.40 [+0.33, +0.47] |
+| 10 | 1 | bootstrap 1 | 0.925 | 0.867 | +0.31 [+0.24, +0.38] |
+| 10 | 0.01 | bootstrap 2 | 0.935 | 0.914 | +0.43 [+0.36, +0.50] |
+| 10 | 1 | bootstrap 2 | 0.920 | 0.896 | +0.40 [+0.32, +0.46] |
+| 10 | 0.01 | bootstrap 3 | 0.938 | 0.904 | +0.38 [+0.29, +0.45] |
+| 10 | 1 | bootstrap 3 | 0.922 | 0.897 | +0.31 [+0.23, +0.39] |
+| 10 | 0.01 | bootstrap 4 | 0.939 | 0.871 | +0.37 [+0.31, +0.44] |
+| 10 | 1 | bootstrap 4 | 0.920 | 0.846 | +0.22 [+0.14, +0.29] |
+| 12 | 0.001 | full | 0.937 | 0.949 | +0.61 [+0.56, +0.66] |
+| 12 | 0.01 | full | 0.943 | 0.960 | +0.59 [+0.54, +0.64] |
+| 12 | 0.1 | full | 0.933 | 0.950 | +0.57 [+0.51, +0.62] |
+| 12 | 1 | full | 0.926 | 0.935 | +0.56 [+0.51, +0.61] |
+| 12 | 0.01 | bootstrap 0 | 0.932 | 0.958 | +0.59 [+0.54, +0.64] |
+| 12 | 1 | bootstrap 0 | 0.916 | 0.947 | +0.57 [+0.51, +0.62] |
+| 12 | 0.01 | bootstrap 1 | 0.936 | 0.913 | +0.56 [+0.50, +0.61] |
+| 12 | 1 | bootstrap 1 | 0.923 | 0.907 | +0.51 [+0.45, +0.57] |
+| 12 | 0.01 | bootstrap 2 | 0.937 | 0.940 | +0.57 [+0.52, +0.63] |
+| 12 | 1 | bootstrap 2 | 0.923 | 0.910 | +0.53 [+0.47, +0.58] |
+| 12 | 0.01 | bootstrap 3 | 0.931 | 0.911 | +0.55 [+0.49, +0.61] |
+| 12 | 1 | bootstrap 3 | 0.918 | 0.880 | +0.53 [+0.47, +0.59] |
+| 12 | 0.01 | bootstrap 4 | 0.940 | 0.942 | +0.62 [+0.56, +0.67] |
+| 12 | 1 | bootstrap 4 | 0.927 | 0.930 | +0.60 [+0.54, +0.65] |
+
+## Part 2b: grounding direction d = mean(F_cf − F_clean) (2-fold over pairs)
+
+| block | held-out pairs: AUROC clean vs CF | natural test: AUROC failure vs success | cos(d / scale, probe weights) |
+|---|---|---|---|
+| 10 | 0.997 | 0.573 | old (C=1, block 10): +0.04 |
+| 12 | 1.000 | 0.717 | tuned (C=0.01, block 12): +0.07 |
