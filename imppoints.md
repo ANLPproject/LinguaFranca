@@ -84,7 +84,64 @@ Source: `kaggle/02_llm_judge.ipynb` (Oct 2026). 1,617 held-out rows (hops 1–2 
 * Caveat on interpretation: the judge is never told the gold bridge entity (neither is the probe). The label is "did the hop name the gold bridge entity", which a grounding judge can only partly infer. This is the fair "text-only diagnoser" comparison the proposal asks for, but it is a weaker test than a fine-tuned diagnoser such as Doctor-RAG's.
 * The earlier Llama-3B-judge figures (61.7 % accuracy, 18.4 % confident-failure recall) turn out to be consistent with this re-run (0.184 recall); what was wrong before was the probe side and the comparison setup, not the judge itself.
 
-## 7. Causal patching (Phase 4) — final run (v4, Kaggle, Llama-3.2-3B, 51 token-aligned pairs)
+## 7. Causal patching (Phase 4) — TF-IDF setting, final (branch `cf-tfidf`, Oct 29)
+Pairs: the TF-IDF test-split counterfactuals (`cf_v1`), hedge + other_wrong_entity kinds; the first 219 in a fixed order, **211 informative** (clean run states the gold hop-1 entity, CF run does not). Clean and CF prompts differ only in the entity. Probe = the **tuned shared probe** (LR C = 0.01, block 12; the same model as `main:outputs/pipeline/tfidf/probes_lr_C0.01_L12`, weight cosine 1.0000); the old probe (C = 1, block 10) is reported alongside. Results: `outputs/patching/` — `patching_tfidf_results` (nb 05), `patching_tuned_results` (nb 08), `causal_tracing_tfidf` (nb 09), `probe_tracing_tfidf` (nb 10, + `analysis.md`), `extra_analysis.md`.
+
+**Threshold note.** The pipeline (Phases 3–5 on `main`) uses τ = 0.650 for this probe; the cf-tfidf bundle got τ = 0.585 from the same model (different CV folds; F0.5-optimal τ is flat and fold-sensitive). Flag rates below are given at **τ = 0.650** so the paper uses one threshold; AUROCs and correlations do not depend on τ.
+
+**A. Generation-based patching (nb 05): copy clean states into the CF run at block L; does hop 1 name the gold entity?** (n = 211)
+
+| block | entity span | tail | last prompt token | third-entity control | entity − control (sign test) |
+|---|---|---|---|---|---|
+| 0 | 1.00 | 0.00 | 0.00 | 0.10 | +0.90 (p 1e-57) |
+| 8 | 0.90 | 0.35 | 0.00 | 0.15 | +0.74 |
+| 10 | 0.73 | 0.40 | 0.00 | 0.14 | +0.59 |
+| 11 | 0.46 | 0.46 | 0.01 | 0.16 | +0.30 |
+| 12 | 0.45 | 0.50 | 0.01 | 0.14 | +0.31 |
+| 13 | 0.38 | 0.48 | 0.03 | 0.14 | +0.24 (p 8e-13) |
+| 14 | 0.19 | 0.15 | 0.07 | 0.12 | +0.07 (p 0.006) |
+| 24 | 0.08 | 0.04 | 0.02 | 0.06 | +0.02 (n.s.) |
+
+* The entity information sits in the entity tokens through block ~8, moves into the following tokens over blocks 9–13, and neither alone is sufficient from block 14. Entity ∪ tail at blocks 11–13 restores only 0.71–0.77, so part of it is already in later positions. Reproducible: 0 / 3,066 outcomes differ between two runs.
+* The third-entity control is 6–16 % (lower than full10's 18–61 %); entity-specific restoration is large through block 13 and small after.
+* **Experiment B (single state at `</hop1>`): null**, ≤ 1 % at blocks 8–20. ⚠️ **The mid-report §6 claim that patching the `</hop1>` state restores the answer came from the void v1 notebook and must be corrected.**
+
+**B. Logit-based causal tracing (nb 09; the mid-term PPT's slides 12–14 method), n = 183 pairs with a ≥ 1-nat gap.** Recovery = fraction of the clean-vs-CF log-prob gap of the clean hop 1 (teacher-forced, entity-name tokens not scored). Sanity (all positions, block 0) = 1.000.
+
+| condition | TF-IDF | mid-term (full10, 93 pairs) |
+|---|---|---|
+| entity last token | peak **0.63 at block 7**; 0.05 at 14 | peak 0.48 at L7 |
+| last prompt token | ~0 until 11; **0.29 at 14**, peak 0.30 at 15 | jumps to 0.39 at L14 |
+| MLP at entity (±2) | 0.38–0.40 at 0–2, 0.30–0.36 at 7–11, **0 from 16** | peak 0.25 at L10–11 |
+| entity span | 1.00 to block 7, 0.82 at 10, 0.48 at 13, **0.08 at 14** | – |
+| tail | 0 → **0.66 at 11–12** → 0.35 at 14 | – |
+
+* **The block 13 → 14 handoff (slide 13) replicates, sharper:** entity last 0.31 → 0.05, entity span 0.48 → 0.08, last token 0.13 → 0.29 in one step.
+* Difference from the mid-term: the MLP window has no single peak at 10–11; MLPs at the entity contribute over blocks 0–13 and nothing after 14. Phrase it that way.
+* The last prompt token reaches 0.30 in log-prob but ≤ 7 % in generation (A): information arrives there but is not sufficient to change the output.
+
+**C. Does the probe follow the intervention? (nb 08, generated hop 1, tuned probe)** CF baseline flagged 0.69 at τ = 0.650 (0.75 at 0.585; old probe 0.48), clean 0.005; AUROC clean vs CF 0.990 (old 0.935). Agreement with "entity restored?" for patches below the probe's block: 0.95 (blocks 0–9: 0.98 vs old 0.93). The jump in false flags exactly at the probe's own block (old 10, new 12) is a reading artefact (the patch overwrites the state the probe reads).
+
+**D. Probe ↔ causal tracing (nb 10 + `analysis.md`), n = 192.** The clean run's hop-1 text is teacher-forced in every run, so **the words are identical; only the question entity differs**.
+
+| | old (C = 1, block 10) | tuned (C = 0.01, block 12) |
+|---|---|---|
+| Test A: AUROC clean vs CF (same words) | 0.911 | **0.960** (0.91–0.96 over 5 retrain bootstraps) |
+| Test A: flagged clean → CF | 0.021 → 0.380 (τ 0.639) | 0.010 → 0.354 (τ 0.650; 0.469 at 0.585) |
+| Test B: within-pair r, entity last token [95 % CI] | +0.28 [+0.19, +0.36] | **+0.59 [+0.54, +0.64]** (0.55–0.62 over retrains) |
+| specificity: probe drop entity span − third-entity control | +2.19 log-odds, 99 % of pairs | **+2.80** [+2.67, +2.94], 99 % of pairs |
+
+* **The probe reads grounding, not wording:** same tokens, and the score rises in 99 % of pairs. Hidden states also carry the words (block 0 gives hop-1 AUROC 0.83, §2), so this test is what separates the two; notebook 08's higher flag rate includes hedge wording.
+* **Alignment:** pair by pair, how much behaviour is restored predicts how much the probe score is restored. Test B r is computed with pair and block means removed and pair-bootstrap CIs; the pooled Spearman in `summary.md` (p ~ 1e-294) is invalid (~2,300 rows from ~190 pairs) and must not be quoted. Entity-span correlations are near zero at blocks 0–7 only because behaviour is at ceiling (SD 0.02); at blocks 9–11 they are +0.42 to +0.51.
+* **The tuned probe also tracks the third-entity control (r = +0.37 [+0.26, +0.48]; old ≈ 0):** it follows how well the context supports the hop text under any intervention, not only the true entity. Specificity is the row above.
+* **Robustness (retrains at blocks 10/12, C 0.001–1, 5 bootstrap training samples):** natural AUROC is 0.92–0.94 at both blocks, but Test B r is 0.51–0.62 at block 12 vs 0.20–0.46 at block 10, and C = 0.01 ≥ C = 1 in all 10 comparisons. **Natural accuracy cannot tell the layers apart; causal alignment can** — independent support for block 12.
+* **Lag:** the probe restores later than behaviour (patch at block 10: behaviour 0.78, probe 0.38) because it reads block 12; the old probe shows the same lag 2 blocks before its layer.
+* **Grounding direction** d = mean(F_cf − F_clean): separates held-out CF pairs perfectly (AUROC 1.00) but natural failures only weakly (0.57 at block 10, 0.72 at block 12). The natural-trained probe transfers to CFs (0.96) but not the reverse: CFs are one narrow failure type, which supports **not** training on them. cos(d, probe weights) ≈ 0.05 is not evidence of different mechanisms (LR weights are covariance-adjusted); do not report it as such.
+
+**Limits:** one model; CF pairs are an induced, mostly hedging failure type; confident `copied_seed_entity` failures are caught at ≤ 22 % by every probe (nb 06/07); patches restore the input-side entity representation, the probed state alone (B) is null.
+
+## 7b. Earlier causal patching study — full10 setting (v4, Kaggle, Llama-3.2-3B, 51 token-aligned pairs)
+Superseded by §7 (more pairs, TF-IDF setting, no train leak). Note: the old probe's 51/51 CF detection here was inflated: the CFs were in its training data and it used a 0.5 threshold.
 Source: `kaggle/03_causal_patching.ipynb`, results in `outputs/patching/`. All checks passed (hook self-test, all-positions sanity = 51/51 restored, probe-link self-check cosine = 1.0, 0 errors). The clean and counterfactual (CF) prompts differ only in the swapped entity (median 5 tokens, 2–11); the CF run never states the right entity (0/51) and hedges ("not mentioned") in 86 % of pairs. Earlier patching results (v1 notebook, v2.0 run) are void.
 
 **Experiment A — copy the clean run's internal state into the CF run at block L; does hop 1 now name the correct bridge entity?** (n = 51; success = gold entity appears in the generated hop 1)
