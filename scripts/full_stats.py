@@ -25,6 +25,7 @@ HEDGE = re.compile(r"not (mentioned|specified|provided|given|available|stated|fo
 SYSTEMS = [("no_intervention", "No intervention"), ("always_retrieve", "Always retrieve"),
            ("judge_restart", "Judge trigger"), ("judge_restart_2r", "Judge trigger, ≤ 2 restarts"),
            ("probe_restart", "**Probe trigger (shared probe)**"),
+           ("probe_restart_2r", "**Probe trigger (shared probe), ≤ 2 restarts**"),
            ("probe_restart_alt", "Probe trigger, dedicated probes"),
            ("probe_restart_2r_alt", "Probe trigger, dedicated probes, ≤ 2 restarts"),
            ("probe_restart_acc", "Probe trigger, accuracy-optimal τ"), ("oracle_restart", "Oracle trigger")]
@@ -150,7 +151,8 @@ def main():
         L += [f"**{ds} (n = {len(grp)})**", "",
               "| system | correct | wrong | fixed | broken | still right | still wrong | restarted | restarted at hop 1 / hop 2 | EM | F1 |",
               "|---|---|---|---|---|---|---|---|---|---|---|"]
-        for key, name in SYSTEMS:
+        extra = [(k, f"Judge trigger ({k.split('__', 1)[1]})") for k in per[grp[0]["uid"]] if k.startswith("judge_restart__")]
+        for key, name in SYSTEMS + extra:
             if key not in per[grp[0]["uid"]]:
                 continue
             o = {it["uid"]: per[it["uid"]][key] for it in grp}
@@ -165,9 +167,6 @@ def main():
             L.append(f"| {name} | {pct(c, len(grp))} | {len(grp) - c} | {fx} | {br} | {sr} | {sw} | {pct(fired, len(grp))} | "
                      f"{h[1]} / {h[2]} | {em:.1%} | {f1:.1%} |")
         L.append("")
-    L += ["The shared probe with ≤ 2 restarts was computed in the final Kaggle run "
-          "(`outputs/pipeline/tfidf_v2_r2_shared/results.md`): 2Wiki 276/500 correct (55.2%), fixed 117, broken 8; "
-          "HotpotQA 265/500 (53.0%), fixed 54, broken 33.", ""]
 
     # ── 6. probe restarts in detail ──────────────────────────────────────────
     L += ["## 6. Probe-triggered restarts in detail (shared probe, one restart)", ""]
