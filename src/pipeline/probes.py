@@ -30,12 +30,12 @@ from src.pipeline.common import (GOLD_HOPS, best_f05_threshold, canonical_split,
 N_LAYERS = 28  # Llama-3.2-3B
 
 
-def make_probe(seed: int = 42):
+def make_probe(seed: int = 42, C: float = 1.0):
     from sklearn.linear_model import LogisticRegression
     from sklearn.pipeline import make_pipeline
     from sklearn.preprocessing import StandardScaler
     return make_pipeline(StandardScaler(),
-                         LogisticRegression(max_iter=1000, class_weight="balanced", random_state=seed))
+                         LogisticRegression(C=C, max_iter=1000, class_weight="balanced", random_state=seed))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -80,12 +80,12 @@ def load_pooled(examples: list[dict], rows: list[dict], hs_dir, layers) -> np.nd
     return np.nan_to_num(X)
 
 
-def oof_probs(X, y, groups, n_folds: int = 5, n_jobs: int | None = None) -> np.ndarray:
+def oof_probs(X, y, groups, n_folds: int = 5, n_jobs: int | None = None, C: float = 1.0) -> np.ndarray:
     from joblib import Parallel, delayed
     from sklearn.model_selection import GroupKFold
 
     def fold(tr, te):
-        m = make_probe().fit(X[tr], y[tr])
+        m = make_probe(C=C).fit(X[tr], y[tr])
         return te, m.predict_proba(X[te])[:, 1]
 
     out = np.full(len(y), np.nan)
@@ -146,7 +146,7 @@ def _bootstrap_auroc_ci(y, p, groups, n_boot: int = 1000, seed: int = 0):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def train_probes(setting: str, out_dir, hs_dir=None, hop1_layer="10", hop2_layer="10", hop12_layer="10",
-                 sweep="all", n_folds: int = 5) -> dict:
+                 sweep="all", n_folds: int = 5, C: float = 1.0) -> dict:
     import joblib
     import sklearn
 
@@ -186,13 +186,13 @@ def train_probes(setting: str, out_dir, hs_dir=None, hop1_layer="10", hop2_layer
         for li, L in enumerate(layers):
             if fixed[t] is not None and L != fixed[t] and sweep == "none":
                 continue
-            p = oof_probs(X_tr[m_tr, li].astype(np.float32), y, g, n_folds)
+            p = oof_probs(X_tr[m_tr, li].astype(np.float32), y, g, n_folds, C=C)
             cv_table[t][L] = _auroc(y, p)
             oof_cache[(t, L)] = p
         print(f"[probes] {t} CV AUROC by layer: " +
               " ".join(f"{L}:{a:.3f}" for L, a in cv_table[t].items()), flush=True)
 
-    meta = dict(setting=setting, n_examples=len(examples), n_train=len(tr), n_test=len(te),
+    meta = dict(setting=setting, C=C, n_examples=len(examples), n_train=len(tr), n_test=len(te),
                 train_ids=[examples[i]["id"] for i in tr], test_ids=[examples[i]["id"] for i in te],
                 sklearn_version=sklearn.__version__, cv_auroc=cv_table, probes={})
     preds = []
@@ -206,7 +206,7 @@ def train_probes(setting: str, out_dir, hs_dir=None, hop1_layer="10", hop2_layer
         # Platt calibration on the out-of-fold scores: a monotone map, so every decision at the mapped
         # threshold is unchanged, but P(fail) becomes a real probability (τ ≈ 0.99 sat on a cliff).
         calib = fit_platt(y_tr, oof_cache[(t, L)])
-        model = make_probe().fit(X_tr[m_tr, li].astype(np.float32), y_tr)
+        model = make_probe(C=C).fit(X_tr[m_tr, li].astype(np.float32), y_tr)
         p_te = model.predict_proba(X_te[m_te, li].astype(np.float32))[:, 1]
         g_te = arr(rows_te, "group")[m_te]
         test = detection_metrics(y_te, p_te >= tau, p_te)
@@ -314,8 +314,10 @@ def main():
     ap.add_argument("--hop2-layer", default="10")
     ap.add_argument("--hop12-layer", default="10")
     ap.add_argument("--sweep", default="all", help="'all' (28 layers, RQ4 table), 'none', or e.g. '8,10,13'")
+    ap.add_argument("--C", type=float, default=1.0, help="LR inverse regularisation (1.0 = the deployed probe)")
     args = ap.parse_args()
-    train_probes(args.setting, args.out, args.hs_dir, args.hop1_layer, args.hop2_layer, args.hop12_layer, args.sweep)
+    train_probes(args.setting, args.out, args.hs_dir, args.hop1_layer, args.hop2_layer, args.hop12_layer, args.sweep,
+                 C=args.C)
 
 
 if __name__ == "__main__":

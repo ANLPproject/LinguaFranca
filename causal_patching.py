@@ -427,6 +427,26 @@ def summarize(out: Path, meta: dict) -> dict:
             total += 1
         C["by_layer"][L] = {"restored": flag_stats(restored), "not_restored": flag_stats(not_restored)}
     C["agreement"] = {"k": agree, "n": total, "rate": agree / total if total else float("nan")}
+    # A patch at block L >= the probe's layer cannot change what the probe reads (the hop-text states at the
+    # probe's layer only see prompt states from blocks below L), so split the agreement there.
+    pl = (meta.get("probe") or {}).get("layer")
+    if pl is not None:
+        for name, keep in (("upstream", lambda L: L < pl), ("downstream", lambda L: L >= pl)):
+            a = t = 0
+            for L in layers:
+                if not keep(L):
+                    continue
+                for r in valid:
+                    pf = r.get("C_entity_span", {}).get(str(L))
+                    if pf is not None:
+                        a += (pf >= tau) != r["A_by_layer"][str(L)]["entity_span"]
+                        t += 1
+            C[f"agreement_{name}"] = {"k": a, "n": t, "rate": a / t if t else float("nan"), "probe_layer": pl}
+    pairs_c = [(r["C_clean"], r["C_cf"]) for r in valid if r.get("C_clean") is not None and r.get("C_cf") is not None]
+    if pairs_c:
+        from sklearn.metrics import roc_auc_score
+        C["auroc_clean_vs_cf"] = float(roc_auc_score([0] * len(pairs_c) + [1] * len(pairs_c),
+                                                     [c for c, _ in pairs_c] + [f for _, f in pairs_c]))
     C["self_check"] = meta.get("probe_self_check")
     S["experiment_C"] = C
     (out / "summary.json").write_text(json.dumps(S, indent=1))
@@ -480,10 +500,19 @@ def write_markdown(S, path):
             L.append(f"| {layer} | {v['baseline']}/{v['n']} | {v['patched']}/{v['n']} | "
                      f"{v['restored_rate']:.2f} [{v['restored_ci95'][0]:.2f}, {v['restored_ci95'][1]:.2f}] |")
     ag = C["agreement"]
-    L += [f"\n## Experiment C — deployed probe (calibrated, flagged = P ≥ τ = {C['tau']:.3f}) on the generated hop 1\n",
+    pr = S.get("probe") or {}
+    L += [f"\n## Experiment C — probe `{pr.get('dir')}` ({pr.get('task')}, block {pr.get('layer')}, calibrated, "
+          f"flagged = P ≥ τ = {C['tau']:.3f}) on the generated hop 1\n",
           f"- clean baseline: {_fmt_flag(C['clean_baseline'])}",
           f"- CF baseline: {_fmt_flag(C['cf_baseline'])}",
-          f"- verdict matches 'entity NOT restored' in {ag['k']}/{ag['n']} patched runs ({ag['rate']:.3f})\n",
+          f"- AUROC clean vs CF baseline: {C.get('auroc_clean_vs_cf', float('nan')):.3f}",
+          f"- verdict matches 'entity NOT restored' in {ag['k']}/{ag['n']} patched runs ({ag['rate']:.3f})"]
+    for name in ("upstream", "downstream"):
+        a = C.get(f"agreement_{name}")
+        if a:
+            side = "below" if name == "upstream" else "at or above"
+            L.append(f"  - patches {side} the probe layer ({a['probe_layer']}): {a['k']}/{a['n']} ({a['rate']:.3f})")
+    L += ["",
           "| block patched (entity span) | runs where the entity WAS restored | runs where it was NOT restored |",
           "|---|---|---|"]
     for layer, v in C["by_layer"].items():
@@ -511,6 +540,9 @@ def main():
     ap.add_argument("--answer-tokens", type=int, default=160, help="Experiment B generation budget")
     ap.add_argument("--skip-b", action="store_true")
     ap.add_argument("--skip-c", action="store_true")
+    ap.add_argument("--c-only", action="store_true",
+                    help="Experiment C only: baselines, sanity and entity-span patches (+ probe); no tail / last "
+                         "token / donor / Experiment B (~1/3 of the time; for re-running C with another probe)")
     ap.add_argument("--dtype", default="float16")
     ap.add_argument("--hf-token", default=os.environ.get("HF_TOKEN"))
     ap.add_argument("--summarize-only", action="store_true")
@@ -620,8 +652,10 @@ def main():
         else:
             print(f"[info] {PL.msg}")
             PL = None
+    if args.c_only and PL is None:
+        raise SystemExit("--c-only needs a working probe link (see the message above); refusing to run")
 
-    meta = {"model": args.model, "used_repo": repo, "setting": "tfidf", "cf_revision": CF_V1["revision"],
+    meta = {"c_only": args.c_only,"model": args.model, "used_repo": repo, "setting": "tfidf", "cf_revision": CF_V1["revision"],
             "data_revision": SETTINGS["tfidf"]["revision"],
             "pair_filter": f"split={args.split}, kinds={','.join(kinds)}", "n_pairs_total": len(pairs),
             "excluded": why, "n_aligned": len(prepared), "skipped": dict(skipped), "n_donor_control": n_ctrl,
@@ -661,7 +695,7 @@ def main():
             print(f"[{i + 1}/{len(prepared)} {time.time() - t0:.0f}s] {p['kind']} clean_ok={rec['baseline_clean_states_gold']} "
                   f"cf_ok={rec['baseline_cf_states_gold']} sanity={rec['sanity_all_positions_L0']} | restored at blocks: "
                   f"entity={[int(L) for L, v in rec['A_by_layer'].items() if v['entity_span']]} "
-                  f"tail={[int(L) for L, v in rec['A_by_layer'].items() if v['tail']]} "
+                  f"tail={[int(L) for L, v in rec['A_by_layer'].items() if v.get('tail')]} "
                   f"donor={[int(L) for L, v in rec['A_by_layer'].items() if v.get('donor_control')]}", flush=True)
         if n_new % 5 == 0:
             summarize(out, meta)
@@ -710,7 +744,7 @@ def run_pair(R, p, donor, layers, b_layers, args, PL):
     del st0
 
     ctrl = None
-    if donor is not None:                         # third entity's tokens spliced into THIS prompt
+    if donor is not None and not args.c_only:     # third entity's tokens spliced into THIS prompt
         ids_x = p["ids_f"].clone()
         ids_x[p["span"]] = donor["ids_c"][donor["span"]]
         ctrl = R.states(ids_x, p["span"], layers)
@@ -721,13 +755,14 @@ def run_pair(R, p, donor, layers, b_layers, args, PL):
         gen = R.generate(p["ids_f"], L, p["span"], p["span_states"][L])
         r["entity_span"] = hit(gen)
         rec["C_entity_span"][str(L)] = probe(p["ids_f"], gen, L, p["span"], p["span_states"][L])
-        r["tail"] = hit(R.generate(p["ids_f"], L, p["tail"], p["tail_states"][L]))
-        r["last_token"] = hit(R.generate(p["ids_f"], L, [p["P"] - 1], p["last_states"][L]))
+        if not args.c_only:
+            r["tail"] = hit(R.generate(p["ids_f"], L, p["tail"], p["tail_states"][L]))
+            r["last_token"] = hit(R.generate(p["ids_f"], L, [p["P"] - 1], p["last_states"][L]))
         if ctrl is not None:
             r["donor_control"] = hit(R.generate(p["ids_f"], L, p["span"], ctrl[L]))
         rec["A_by_layer"][str(L)] = r
 
-    if not args.skip_b and b_layers:
+    if not args.skip_b and not args.c_only and b_layers:
         m_c = HOP1_RE.search(p["clean"]["generated_cot"]); m_f = HOP1_RE.search(p["cf"]["generated_cot"])
         if m_c and m_f:
             add = lambda t: torch.tensor(R.tok(t, add_special_tokens=False).input_ids, dtype=p["ids_c"].dtype)  # noqa: E731
