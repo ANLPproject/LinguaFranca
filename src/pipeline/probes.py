@@ -314,7 +314,8 @@ def main():
     ap.add_argument("--hop2-layer", default="10")
     ap.add_argument("--hop12-layer", default="10")
     ap.add_argument("--sweep", default="all", help="'all' (28 layers, RQ4 table), 'none', or e.g. '8,10,13'")
-    ap.add_argument("--C", type=float, default=1.0, help="LR inverse regularization (probe_suite_v1 tuned: 0.01)")
+    ap.add_argument("--C", type=float, default=1.0,
+                    help="LR inverse regularization (1.0 = the old block-10 probe; final tuned probe: 0.01)")
     args = ap.parse_args()
     train_probes(args.setting, args.out, args.hs_dir, args.hop1_layer, args.hop2_layer, args.hop12_layer, args.sweep,
                  C=args.C)
