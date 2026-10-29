@@ -268,26 +268,13 @@ def analyze(out: Path, probe_dir: Path):
             curve[k].append(v[k])
     L.append("")
 
-    # online trigger: fire at the first prefix (≥ MIN_ONLINE tokens) whose calibrated P(fail) ≥ τ
-    fire_at = []
-    for r in te:
-        z = np.array(r["z"])
-        hit = np.flatnonzero(z[MIN_ONLINE - 1:] >= z_tau) if len(z) >= MIN_ONLINE else np.array([])
-        fire_at.append(int(hit[0]) + MIN_ONLINE if len(hit) else (len(z) if z[-1] >= z_tau else None))
-    on = np.array([t is not None for t in fire_at])
-    end = P_te >= z_tau
-    tp = on & (y_te == 1)
-    frac_tp = np.array([fire_at[i] / len(te[i]["z"]) for i in np.flatnonzero(tp)])
-    saved = np.array([len(te[i]["z"]) - fire_at[i] for i in np.flatnonzero(tp)])
-    dm_on, dm_end = detection_metrics(y_te, on), detection_metrics(y_te, end)
-    L.append(f"Online trigger (fires at the first prefix of ≥ {MIN_ONLINE} tokens with P(fail) ≥ τ, same τ):\n")
-    L.append("| trigger | precision | recall | F0.5 | FPR |")
-    L.append("|---|---|---|---|---|")
-    for lab, dm in (("end of hop (deployed)", dm_end), ("online, within the hop", dm_on)):
-        L.append(f"| {lab} | {f(dm['precision'])} | {f(dm['recall'])} | {f(dm['f05'])} | {f(dm['fpr'])} |")
-    L.append(f"\nOn true failures the online trigger fires after {np.median(frac_tp) * 100:.0f} % of the hop "
-             f"(median; {np.mean(frac_tp <= 0.5) * 100:.0f} % fire within the first half), saving "
-             f"{saved.mean():.1f} hop tokens on average.\n")
+    # why there is no online (mid-hop) trigger: the probe was fitted on full-hop means, and the hops open with
+    # the same template ("From the context, I find that ..."), so short-prefix scores are far off its scale
+    z3 = np.array([r["z"][min(MIN_ONLINE, len(r["z"])) - 1] for r in te])
+    L.append(f"The probe's scale is fitted on full hops, so prefix scores are rank-comparable (AUROC) but not "
+             f"threshold-comparable: after {MIN_ONLINE} tokens (mostly the template 'From the context, I find that') "
+             f"the median raw logit is {np.median(z3):+.2f} vs {np.median(P_te):+.2f} at the end of the hop, and "
+             f"{np.mean(z3 >= z_tau):.0%} of hops are above τ. A mid-hop trigger would need a probe trained on prefixes.\n")
 
     (out / "uncertainty_early.md").write_text("\n".join(L), encoding="utf-8")
     plot(out, score_te, names, y_te, g_te, curve)
@@ -323,7 +310,7 @@ def plot(out: Path, score_te, names, y_te, g_te, curve):
     ax.invert_yaxis()
     ax.axvline(0.5, color=GRID, lw=1)
     ax.grid(axis="x", color=GRID, lw=0.8)
-    ax.set_xlim(0.45, 1.02)
+    ax.set_xlim(0.38, 1.02)
     ax.set_xlabel("hop-failure AUROC (test split, 95% CI)", fontsize=9, color=INK)
     ax.set_title("(a) Hidden state vs token confidence", fontsize=10, color=INK, loc="left")
 
@@ -333,11 +320,12 @@ def plot(out: Path, score_te, names, y_te, g_te, curve):
                                   ("mean_nll", "mean token NLL", "-."), ("mean_ent", "mean entropy", ":")), C):
         ax.plot(x, curve[k], ls=ls, color=col, lw=2, marker="o", ms=3.5, label=lab)
     ax.grid(axis="y", color=GRID, lw=0.8)
-    ax.set_ylim(0.45, 1.0)
+    ax.axhline(0.5, color=MUTED, lw=0.8, ls=":")
+    ax.set_ylim(0.38, 1.0)
     ax.set_xlabel("share of the hop generated (%)", fontsize=9, color=INK)
     ax.set_ylabel("hop-failure AUROC", fontsize=9, color=INK)
     ax.set_title("(b) How early the signal appears", fontsize=10, color=INK, loc="left")
-    ax.legend(fontsize=7.5, frameon=False, loc="lower right")
+    ax.legend(fontsize=7.5, frameon=False, loc="upper left")
     fig.tight_layout()
     fig.savefig(out / "uncertainty_early.png", dpi=220)
     fig.savefig(out / "uncertainty_early.pdf")
