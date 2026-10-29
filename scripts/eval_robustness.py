@@ -42,8 +42,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from src.pipeline.common import (answer_correct, detection_metrics, is_hedge, load_setting_examples,  # noqa: E402
-                                 read_jsonl)
+from src.pipeline.common import (answer_correct, detection_metrics, hop_order_condition, is_hedge,  # noqa: E402
+                                 load_setting_examples, read_jsonl)
 from src.pipeline.evaluate import _acc_optimal_tau, _fold, _merged, _paired_ci, _relabel, _safe  # noqa: E402
 from src.pipeline.probes import ProbeBundle  # noqa: E402
 from src.pipeline.systems import outcome  # noqa: E402
@@ -562,7 +562,9 @@ def main():
         succ = [it for it in rows_k if it["labels"][str(k)] == 0]
         miss = [it for it in fail if P[it["uid"]][k] < pb.tau[k]]
         fa = [it for it in succ if P[it["uid"]][k] >= pb.tau[k]]
-        cond.update((k, it.get("retrieval_condition")) for it in miss)
+        # first-stage condition in TRUE hop order (the stored labels are alphabetical; see common.hop_order_condition)
+        cond.update((k, hop_order_condition(ex[it["id"]], it["context_titles"]) if it["id"] in ex
+                     else it.get("retrieval_condition")) for it in miss)
         ok = lambda it: answer_correct(s0[it["uid"]]["answer"], it["gold_answer"])  # noqa: E731
         pct = lambda x, n: f"{x} ({x / n:.0%})" if n else "0"  # noqa: E731
         L.append(f"| {k} | {len(fail)} | {pct(len(miss), len(fail))} | "
