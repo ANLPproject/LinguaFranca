@@ -185,8 +185,9 @@ def main():
         src = Path(args.reuse_from)
         prev = json.loads((src / "run_args.json").read_text()) if (src / "run_args.json").exists() else {}
         pats = list(REUSABLE)
-        same_repair = ((prev.get("repair", "v1"), prev.get("retriever", "dense"), prev.get("top_k", 3))
-                       == (args.repair, args.retriever, args.top_k))
+        same_repair = ((prev.get("repair", "v1"), prev.get("retriever", "dense"), prev.get("top_k", 3),
+                        prev.get("rerank_pool", 20))
+                       == (args.repair, args.retriever, args.top_k, args.rerank_pool))
         # runs made before probe fingerprints existed used the default bundle at outputs/pipeline/<setting>/probes
         same_probe = (prev.get("probe_id") == args.probe_id if "probe_id" in prev
                       else Path(prev.get("probe_dir", "")).name == probe_dir.name == "probes")
