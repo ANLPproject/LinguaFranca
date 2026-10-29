@@ -107,7 +107,12 @@ def _relabel(items: list[dict], s0: dict) -> None:
         it["label_source"] = "relabeled"
 
 
-def evaluate(out, probe_dir=None, probe_mode: str = "shared") -> dict:
+def evaluate(out, probe_dir=None, probe_mode: str = "shared", probe_changed: bool = False) -> dict:
+    """
+    probe_changed=True: the probe bundle differs from the one the run used.  One-restart probe systems are
+    re-scored exactly from the saved live features, but the second-round probe decisions (scored during the
+    run) and the live-subset equivalence check belong to the old probe, so they are left out.
+    """
     out = Path(out)
     probe_dir = Path(probe_dir) if probe_dir else out / "probes"
     meta = json.loads((probe_dir / "probes_meta.json").read_text())
@@ -272,16 +277,19 @@ def evaluate(out, probe_dir=None, probe_mode: str = "shared") -> dict:
                                                   **dict(kw, judge_rec=jrecs.get(it["uid"])))
         alt_kw = dict(kw, probe_scores=alt_scores[it["uid"]], tau=tau_alt)
         row["probe_restart_alt"] = outcome("probe_restart", it, s0[it["uid"]], rs[it["uid"]], **alt_kw)
-        if has_round2:
+        if has_round2 and not probe_changed:
             # second-round probe scores were computed during the run, so the 2-round probe system
             # exists for the run's probe mode only (main row if it matches, ablation row otherwise)
             row[p2_key] = outcome("probe_restart", it, s0[it["uid"]], rs[it["uid"]], rounds=2,
                                   **(kw if run_mode == probe_mode else alt_kw))
+        if has_round2:
             row["judge_restart_2r"] = outcome("judge_restart", it, s0[it["uid"]], rs[it["uid"]], rounds=2, **kw)
         per_item.append(row)
 
-    systems_present = SYSTEMS + (["probe_restart_acc"] if acc_tau else []) + \
-        ([p2_key, "judge_restart_2r"] if has_round2 else []) + ["probe_restart_alt"] +         [f"judge_restart__{jn}" for jn in extra_judges]
+    systems_present = (SYSTEMS + (["probe_restart_acc"] if acc_tau else [])
+                       + ([p2_key] if has_round2 and not probe_changed else [])
+                       + (["judge_restart_2r"] if has_round2 else []) + ["probe_restart_alt"]
+                       + [f"judge_restart__{jn}" for jn in extra_judges])
     for jn in extra_judges:
         LABEL[f"judge_restart__{jn}"] = f"Judge trigger ({jn})"
     e2e = {}
@@ -314,12 +322,12 @@ def evaluate(out, probe_dir=None, probe_mode: str = "shared") -> dict:
             jx = np.array([r[f"judge_restart__{jn}"]["correct"] for r in rows], float)
             e2e[ds][f"probe_minus_judge_{jn}_acc_ci95"] = _paired_ci(pr, jx)
         if has_round2:
-            if p2_key == "probe_restart_2r":
+            if p2_key == "probe_restart_2r" and not probe_changed:
                 pr2 = np.array([r["probe_restart_2r"]["correct"] for r in rows], float)
                 jr2 = np.array([r["judge_restart_2r"]["correct"] for r in rows], float)
                 e2e[ds]["probe2r_minus_judge2r_acc_ci95"] = _paired_ci(pr2, jr2)
             e2e[ds]["second_restart_rate"] = {s: float(np.mean([r[s]["n_restarts"] == 2 for r in rows]))
-                                              for s in (p2_key, "judge_restart_2r")}
+                                              for s in (p2_key, "judge_restart_2r") if s in rows[0]}
         # breakdown by first-stage retrieval condition
         by = defaultdict(list)
         for r in rows:
@@ -368,7 +376,7 @@ def evaluate(out, probe_dir=None, probe_mode: str = "shared") -> dict:
     # ── latency & equivalence (live subset) ──────────────────────────────────
     lat = {}
     it_by = {it["uid"]: it for it in items}
-    lv = [u for u in live if u in it_by]
+    lv = [u for u in live if u in it_by] if not probe_changed else []   # live runs used the old probe
     if lv:
         sims = {u: item_rows[u] for u in lv}
 
@@ -604,8 +612,10 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--probe-dir", default=None)
     ap.add_argument("--probe-mode", default="shared", choices=["shared", "dedicated"])
+    ap.add_argument("--probe-changed", action="store_true",
+                    help="the probe differs from the run's: report only the one-restart probe systems")
     args = ap.parse_args()
-    evaluate(args.out, args.probe_dir, args.probe_mode)
+    evaluate(args.out, args.probe_dir, args.probe_mode, args.probe_changed)
 
 
 if __name__ == "__main__":

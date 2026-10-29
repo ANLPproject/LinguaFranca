@@ -36,6 +36,7 @@ Example (Kaggle, T4):
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import random
@@ -176,14 +177,22 @@ def main():
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+    probe_dir = Path(args.probe_dir) if args.probe_dir else out / "probes"
+    # fingerprint of the probe bundle: second-round decisions are only reusable with the same probes
+    meta_file = probe_dir / "probes_meta.json"
+    args.probe_id = hashlib.sha1(meta_file.read_bytes()).hexdigest()[:12] if meta_file.exists() else None
     if args.reuse_from:
         src = Path(args.reuse_from)
         prev = json.loads((src / "run_args.json").read_text()) if (src / "run_args.json").exists() else {}
         pats = list(REUSABLE)
-        same_repair = (prev.get("repair", "v1"), prev.get("retriever", "dense"), prev.get("top_k", 3)) ==             (args.repair, args.retriever, args.top_k)
+        same_repair = ((prev.get("repair", "v1"), prev.get("retriever", "dense"), prev.get("top_k", 3))
+                       == (args.repair, args.retriever, args.top_k))
+        # runs made before probe fingerprints existed used the default bundle at outputs/pipeline/<setting>/probes
+        same_probe = (prev.get("probe_id") == args.probe_id if "probe_id" in prev
+                      else Path(prev.get("probe_dir", "")).name == probe_dir.name == "probes")
         if same_repair:                                             # restarts depend on the repair only
             pats += ["restarts.jsonl", "restarts.shard*.jsonl"]
-            if prev.get("probe_mode", "dedicated") == args.probe_mode:  # round 2 also depends on the probe
+            if prev.get("probe_mode", "dedicated") == args.probe_mode and same_probe:  # round 2 needs the same probe
                 pats += ["rescore.jsonl", "rescore.shard*.jsonl", "restarts2.jsonl", "restarts2.shard*.jsonl"]
         for pat in pats:
             for p in src.glob(pat):
@@ -196,7 +205,6 @@ def main():
     if args.rounds == 1:
         stages = [s for s in stages if s not in ("rescore", "restarts2")]
     pool = args.rerank_pool if args.repair == "v2" else 0
-    probe_dir = Path(args.probe_dir) if args.probe_dir else out / "probes"
     sfx = f".shard{args.shard}" if args.num_shards > 1 else ""
     token = os.environ.get("HF_TOKEN")
     (out / "run_args.json").write_text(json.dumps(vars(args), indent=1))
