@@ -161,18 +161,16 @@ def best_online_theta(p, hop, t, y, n_hops, min_precision=None):
     return best
 
 
-def analyze(out: Path, probe_dir: Path):
+def fit_prefix(out: Path):
+    """
+    Train the prefix probe on the train split, choose θ (F0.5 and strict) on grouped OOF predictions, and save
+    prefix_probe.npz (portable, LinearProbe-compatible) + prefix_meta.json.  Returns (model, meta dict).
+    """
     from sklearn.model_selection import GroupKFold
-    meta = json.loads((probe_dir / "probes_meta.json").read_text())
-    pm = meta["probes"][TASK]
-    dep = LinearProbe(probe_dir / f"{TASK}.npz")
-    z_tau = float(_logit(pm["tau_raw"]))
-
+    from src.pipeline.probes import export_portable
     Xtr, itr, str_ = load(out, "train")
-    Xte, ite, ste = load(out, "test")
-    y_tr = np.array([r["y"] for r in itr]); y_te = np.array([r["y"] for r in ite])
-    g_tr = np.array([r["group"] for r in itr]); g_te = np.array([r["group"] for r in ite])
-    n_te = np.array([r["n"] for r in ite])
+    y_tr = np.array([r["y"] for r in itr])
+    g_tr = np.array([r["group"] for r in itr])
     t0 = time.time()
 
     # out-of-fold scores inside the train split (grouped by question pair): the prefix probe on every prefix, and
@@ -195,9 +193,29 @@ def analyze(out: Path, probe_dir: Path):
     # final prefix probe on all train hops
     F, h, _ = design(Xtr, itr, str_)
     model = make_probe(C=C_REG).fit(F, y_tr[h])
+    print(f"  trained: {time.time() - t0:.0f}s", flush=True)
+    export_portable(model, out / "prefix_probe.npz")
+    pmeta = dict(th_f05=th_f05, th_strict=th_strict, train_precision_bar=dep_prec, min_t=MIN_T, C=C_REG,
+                 n_train_hops=len(itr),
+                 features="running mean of the probe layer's hop states after t tokens + log t")
+    (out / "prefix_meta.json").write_text(json.dumps(pmeta, indent=1))
+    return model, pmeta
+
+
+def analyze(out: Path, probe_dir: Path):
+    meta = json.loads((probe_dir / "probes_meta.json").read_text())
+    pm = meta["probes"][TASK]
+    dep = LinearProbe(probe_dir / f"{TASK}.npz")
+    z_tau = float(_logit(pm["tau_raw"]))
+
+    model, pmeta = fit_prefix(out)
+    th_f05, th_strict, dep_prec = pmeta["th_f05"], pmeta["th_strict"], pmeta["train_precision_bar"]
+    Xte, ite, ste = load(out, "test")
+    y_te = np.array([r["y"] for r in ite])
+    g_te = np.array([r["group"] for r in ite])
+    n_te = np.array([r["n"] for r in ite])
     Fte, hte, tte = design(Xte, ite, ste)
     p_te = model.predict_proba(Fte)[:, 1]
-    print(f"  trained: {time.time() - t0:.0f}s", flush=True)
 
     # deployed probe, end of hop
     full_te = np.nan_to_num(np.asarray(Xte[ste[1:] - 1], dtype=np.float64))
@@ -205,7 +223,7 @@ def analyze(out: Path, probe_dir: Path):
     end_flag = z_end >= z_tau
 
     L = [f"# A probe that stops a failing hop before it ends (TF-IDF Phase 1 split, block {pm['layer']})", "",
-         f"Train {len(itr)} hops, test {len(ite)} hops (fail {y_te.mean():.2f}); hop length median {int(np.median(n_te))} "
+         f"Train {pmeta['n_train_hops']} hops, test {len(ite)} hops (fail {y_te.mean():.2f}); hop length median {int(np.median(n_te))} "
          f"tokens. Prefix probe: StandardScaler + LR (C = {C_REG}) on the running mean of the hop's block-{pm['layer']} "
          f"states after each token t ≥ {MIN_T}, plus log t; label = the hop's label. Thresholds from grouped 5-fold "
          f"out-of-fold predictions inside the train split only. Deployed probe: τ = {pm['tau']:.3f} at `</hopK>`.", "",
