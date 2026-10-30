@@ -15,3 +15,8 @@ pipeline_results*.zip
 pipeline_results*/
 
 /pipeline_tfidf_*/
+# local-only: large Kaggle feature dumps (see imppoints.md §0 "Not in git") and scratch helpers
+outputs/features/
+outputs/patching/probe_tracing_tfidf/*/features.npz
+scratch/
+create_kaggle_phase4_patching_local_backup.ipynb
