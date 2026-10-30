@@ -1,23 +1,60 @@
-# Important Discoveries & Insights (LinguaFranca) — v3
+# Important Discoveries & Insights (LinguaFranca) — v4 (final, Oct 30 2026)
 
-> **Oct 2026 revision.** Sections 1–7 are the corrected numbers from the audit on branch `fixes-v2`
-> (`FIXES_AND_RERUN.md` §2 lists every error in the earlier version of this file, e.g. the invalid
-> "98.2 % confident-wrong" and "91.4 % all-hop" figures). They were recomputed on the canonical dataset
-> (4,078 examples: 4,000 natural + 78 counterfactual) with the canonical grouped 80/20 split
-> (3,264 train / 814 test). Files referenced in §2–7 (`outputs/probing/`, `outputs/llm_judge/`,
-> `outputs/patching/`, `kaggle/0*.ipynb`) live on `fixes-v2` until it is merged.
-> Section 8 (Phases 3–5) is new: `src/pipeline/`, results in `outputs/pipeline/tfidf/`.
+> **Status.** Everything below is on `main` (branches `fixes-v2`, `cf-tfidf` and `eval-robustness` are merged).
+> Every number was recomputed after the Oct 2026 audit (`FIXES_AND_RERUN.md` §2 lists the errors in earlier
+> versions of this file, e.g. the invalid "98.2 % confident-wrong" and "91.4 % all-hop" figures).
+
+## 0. The story, the settings, and where everything is
+
+**One paragraph.** Llama-3.2-3B-Instruct answers 2-hop questions with explicit `<hop1>`/`<hop2>` steps. A linear probe on the mean hidden state of a hop's tokens detects a failing hop (the hop does not state the gold bridge entity) with AUROC ≈ 0.95, far above off-the-shelf text judges up to 8B (≤ 0.78) and above the model's own token confidence, the signal FLARE/DRAGIN-style active RAG uses (≤ 0.68). Causal patching shows the probe reads whether the hop is *grounded in the context*, not its wording, and that it follows causal interventions pair by pair. Used as a live trigger for Naive Restart RAG (stop at `</hopK>`, retrieve, restart), it matches the accuracy of restarting every question with a third fewer restarts, beats a Doctor-RAG-style judge at every matched restart budget, and flags failures ~3× earlier at ~40 % lower cost. The hidden state predicts the failure even before the hop's words differ. Remaining errors are mostly retrieval in domain and detection out of domain (HotpotQA).
+
+**Two settings.**
+
+| setting | context | used in | status |
+|---|---|---|---|
+| full10 | all 10 2Wiki paragraphs (2 gold + 8 distractors) | §1–§6, §7b (earlier study, mid-term report) | superseded for the paper's main results, still valid as stated |
+| **TF-IDF top-5** | TF-IDF keeps 5 of the 10 paragraphs, so a gold paragraph is often missing | §1b, §2b, §7, §8 | **final** |
+
+**Section map.** §1/§1b data · §2/§2b probes · §3 hedging vs confident failures · §4 qualitative errors · §5 hop → final answer · §6 LLM-judge baseline (full10) · §7 causal patching (TF-IDF, final) · §7b causal patching (full10, superseded) · **§8 Phases 3–5, final run, all extra analyses** · §8b earlier Phases 3–5 run · §9 positioning vs Doctor-RAG · §10 report checklist · §11 figures for the paper · §12 limitations and future work.
+
+**Where everything is** (all paths relative to the repo root).
+
+| what | notebooks (Kaggle) | scripts | outputs |
+|---|---|---|---|
+| Phase 1 data | `kaggle_phase1.ipynb` (legacy) | `scripts/make_canonical_dataset.py` | HF dataset `AnishRacherla/LinguaFranca-Phase3` |
+| Probes, full10 | `kaggle/01_probing.ipynb` | – | `outputs/probing/` |
+| LLM judge, full10 | `kaggle/02_llm_judge.ipynb` | – | `outputs/llm_judge/` |
+| Causal patching, full10 | `kaggle/03_causal_patching.ipynb` | `causal_patching.py` | `outputs/patching/{summary.md, pairs.jsonl, meta.json}` |
+| TF-IDF counterfactuals | `kaggle/04_counterfactuals_tfidf.ipynb` | `scripts/make_cf_candidates.py` | HF `tfidf_distractor_rag/cf_v1/` (pinned in `src/pipeline/common.py: CF_V1`) |
+| Patching, TF-IDF | `kaggle/05…`, `08_patching_c_tuned_probe.ipynb` | `scripts/patching_extra_analysis.py` | `outputs/patching/patching_tfidf_results/`, `patching_tuned_results/`, `extra_analysis.md` |
+| CF eval + layer sweep | `kaggle/06_probe_cf_eval.ipynb`, `07_probe_layer_sweep_cf.ipynb` | `scripts/probe_cf_eval.py`, `probe_layer_sweep_cf.py` | (notebook outputs) |
+| Logit causal tracing | `kaggle/09_causal_tracing_logit_tfidf.ipynb` | – | `outputs/patching/causal_tracing_tfidf/` |
+| Probe ↔ tracing | `kaggle/10_probe_tracing_tfidf.ipynb` | `scripts/probe_tracing_analysis.py`, `make_causal_figures.py` | `outputs/patching/probe_tracing_tfidf/analysis.md`, `outputs/patching/causal_figure.{png,pdf}` |
+| Deployed probes | – | `python -m src.pipeline.probes --C 0.01 …` | `outputs/pipeline/tfidf/probes_lr_C0.01_L12/` (tuned, final), `…/probes/` (old) |
+| Phases 3–5 pipeline | `kaggle/pipeline_phase3_5.ipynb` | `src/pipeline/` (`run.py`, `evaluate.py`, `systems.py`, …) | `outputs/pipeline/tfidf_final_lrC0.01_L12/` (final), `tfidf_v2_r2*/` (earlier) |
+| Extra analyses on the final run | – | `scripts/eval_robustness.py`, `trigger_baselines.py`, `verifier_selection.py`, `selective_and_cost.py`, `error_budget_cases.py`, `hotpot_hops.py`, `full_stats.py` | `outputs/pipeline/tfidf_final_lrC0.01_L12/{robustness, selective, error_budget, hotpot_hops}/`, `trigger_baselines.md`, `verifier_selection.md`, `full_stats.md` |
+| Probe vs token confidence, early detection | (Kaggle GPU, script) | `scripts/uncertainty_early.py`, `online_probe.py` | `outputs/pipeline/tfidf_final_lrC0.01_L12/uncertainty_early/`, `outputs/pipeline/tfidf/online_probe/` |
+| Anticipatory probe, latent retrieval | – | `scripts/anticipatory_probe.py`, `latent_retrieval.py` | `outputs/pipeline/anticipatory_probe.md`, `latent_retrieval.md` |
+
+**Not in git (too large):** the probe-tracing features `outputs/patching/probe_tracing_tfidf/probe_tracing_tfidf/features.npz` (94 MB; Kaggle output of notebook 10, needed by `probe_tracing_analysis.py` and `make_causal_figures.py`); Havish's full run folder `pipeline_tfidf_v2_r2_shared_dense_probes_lr_C0.01_L12` (331 MB, Kaggle; needed to re-run any script on the final run); the per-token prefix features of `online_probe.py` (~1 GB, regenerated by the script).
 
 ## 1. Data generation & labeling (Phase 1)
 * **Strict XML chain-of-thought.** Llama-3.2-3B-Instruct wraps each step in `<hop1>…</hop1>`, `<hop2>…</hop2>`. This gives exact token boundaries for pooling per hop.
-* **Context = all 10 passages (2 gold + 8 distractors), not gold-only.** The gold-title filter in `generate_cot._normalise` silently matched nothing on the HF columnar format, so every Phase 1 prompt contains all 10 paragraphs (verified: 4,000 / 4,000). Sections 1–7 therefore describe this *10-passage* setting; the Phase 3–5 experiments (§8) use the TF-IDF top-5 setting from branch `experiment/distractor-rag`.
+* **Context = all 10 passages (2 gold + 8 distractors), not gold-only.** The gold-title filter in `generate_cot._normalise` silently matched nothing on the HF columnar format, so every Phase 1 prompt contains all 10 paragraphs (verified: 4,000 / 4,000). §1–§6 and §7b therefore describe this *10-passage* (full10) setting; the final experiments (§1b, §2b, §7, §8) use the TF-IDF top-5 setting (§1b).
 * **Every question is strictly 2-hop** (all 4,000 gold reasoning graphs have exactly 2 edges) — but the **model** often writes more steps: 1,329 / 4,000 examples have 3–18 `<hopN>` blocks.
 * **Label = "does the hop text state that hop's gold bridging entity?"** (string → Wikidata alias → SBERT → LLM-judge fallback). Hops 3+ have no gold entity and are now **unlabeled (-1)**. The old labeler called them all failures; they were 64 % of all failure labels and made the hop index alone predictive (77.9 % accuracy).
 * **Label semantics caveat.** "Failure" means *the hop did not state the bridge entity*, which includes detours, not only hallucinations: 38 % of natural hop-1 failures and 48 % of natural hop-2 failures still reach a correct final answer (the model states the fact in a later step).
 * **Class balance.** Hop 1: 3,714 success / 364 failure (8.9 %); hop 2: 2,381 / 1,697 (41.6 %).
 * **Counterfactuals (78)** swap the question's entry entity for another title of the same token length. Because the context is unchanged, ~90 % of them make the model say "X is not mentioned in the context" (hedging). They are an *entity-not-in-context* stratum, reported separately. **Natural hop-1 failures contain no hedging at all** — they are confident wrong or off-target statements.
 
-## 2. Probing results (Phases 2–3)
+## 1b. The TF-IDF setting (final experiments)
+* **Why.** With all 10 paragraphs the evidence is always present, so a restart has little to fix. TF-IDF keeps the top 5 of the 10 paragraphs: both gold paragraphs survive in only ~40 % of questions, so many failures are caused by missing evidence that retrieval can supply.
+* **Data.** Same 4,000 2Wiki questions, regenerated with the TF-IDF context (data pinned to HF revision `7ad8d6eb` in `src/pipeline/common.py`; identical to the latest file). Grouped 80/20 split: **3,200 train / 800 test questions** (6,325 / 1,586 labelled hop rows). Same labeling as §1, with the LLM fallback checked on every failure (so Wikidata aliases are not needed).
+* **Class balance.** Hop-1 failures 782 / 4,000 (19.6 %), hop-2 failures 2,620 (65.5 %); test split 17.6 % / 65.5 %. Hedges are 10.8 % of failing test hops.
+* **What is missing (true hop order).** TF-IDF almost always keeps the hop-1 paragraph and drops the hop-2 one: in all 4,000, both present 1,594, only the hop-1 paragraph 2,269, only the hop-2 paragraph 39, neither 92. ⚠️ The stored `only_p1` / `only_p2` conditions were in alphabetical, not hop, order; `src/pipeline/common.py: hop_order_condition` recomputes them, and all figures here use hop order.
+* **Counterfactuals (TF-IDF, `cf_v1`).** Same construction as §1 (swap the question's entity, context unchanged), generated for the TF-IDF data in notebook 04 (preflight: parity with Phase 1 features 1.0, 0 misaligned). Used **only** for causal patching and as a separate evaluation stratum, never for probe training (natural TF-IDF failures are plentiful, and §7 D shows CF-trained directions do not transfer to natural failures). Kinds: hedge (most), other wrong entity, copied seed entity.
+
+## 2. Probing results (Phases 2–3, full10 setting)
 Probe: StandardScaler + logistic regression (balanced class weights) on the mean-pooled hidden state of the hop's tokens. Layer L = output of transformer block L (layer 0 is *after* the first block, not the raw embedding). Layers chosen by 5-fold grouped CV **inside the train split**; numbers are on the held-out test split with 95 % grouped-bootstrap CIs.
 
 | task (test split) | layer | acc | bal. acc | AUROC [95 % CI] | failure recall (TPR) | false-alarm rate (FPR) | majority-class acc |
@@ -40,6 +77,20 @@ Probe: StandardScaler + logistic regression (balanced class weights) on the mean
 * **Controls.** Shuffled-label probe: AUROC 0.47–0.51 (chance). Cross-hop transfer (train hop 1 → test hop 2): AUROC 0.66–0.69 at the middle layers, so hop-1 and hop-2 failure directions differ substantially.
 * **Text vs hidden state.** On hop 1 a bag-of-words on the hop text already reaches AUROC 0.89, and block 0 reaches 0.83, so much of the hop-1 signal is lexical. The middle layers add a real margin (0.95–0.96), especially on hop 2 (0.95 vs 0.72 for text).
 * **Split stability** (`bootstrap_confident_wrong.py`, 5 seeds): hop-1 AUROC 0.961 ± 0.006 (layer 10), 0.960 ± 0.005 (layer 11).
+
+## 2b. The deployed probes (TF-IDF setting) — what the pipeline uses
+Recipe: StandardScaler + logistic regression (balanced) on the mean-pooled hop state, Platt-calibrated on out-of-fold scores, threshold τ = F0.5-optimal on grouped 5-fold CV **inside the train split**. "Shared" = one probe for hop-1 and hop-2 rows (the pipeline's main probe); "dedicated" = one per hop (ablation). Test split, 95 % grouped-bootstrap CIs (`probes_meta.json` in each bundle).
+
+| probe | block | C | τ | test AUROC [95 % CI] | precision | recall | F0.5 | FPR | ECE (calibrated) |
+|---|---|---|---|---|---|---|---|---|---|
+| **shared, tuned (final)** | **12** | **0.01** | **0.650** | **0.954 [0.944, 0.964]** | 0.899 | 0.803 | 0.878 | 0.063 | 0.019 |
+| dedicated hop 1, tuned | 12 | 0.01 | 0.538 | 0.949 [0.930, 0.965] | 0.795 | 0.698 | 0.774 | 0.038 | 0.022 |
+| dedicated hop 2, tuned | 12 | 0.01 | 0.686 | 0.929 [0.910, 0.948] | 0.928 | 0.836 | 0.908 | 0.120 | 0.025 |
+| shared, old (mid-term) | 10 | 1 | 0.639 | 0.931 [0.917, 0.943] | 0.887 | 0.780 | 0.863 | 0.070 | 0.034 |
+
+* **Why C = 0.01, block 12.** The C = 1 probe is under-regularised. The counterfactual layer sweep (notebook 07) proposed block 12 with C = 0.01; because that sweep looked at test-split CFs, the choice was re-checked on the **train split only** (`probes_lr_C0.01_L12/layer_check.md`): shared CV AUROC is flat over blocks 11–15 (0.952–0.954) and block 12 is within 0.002 of the best. Independent support from causal alignment: §7 D (block 12 aligns with interventions much better than block 10 at equal natural accuracy).
+* **Confident vs hedge failures (test):** shared tuned probe recall 0.79 on confident failures, 0.90 on hedges (old: 0.78 / 0.83).
+* **τ caveat.** The same weights got τ = 0.585 on Kaggle (sklearn 1.6.1) and 0.650 here (1.8.0): only the CV folds differ, and the F0.5 curve is flat. All Phase 3–5 results use 0.650; §8 A4 shows the conclusions hold for any τ in 0.30–0.90.
 
 ## 3. Hedging vs confident failures (hop 1)
 Recall on hop-1 failures at the default threshold, **always with the false-alarm rate on hop-1 successes**:
@@ -84,10 +135,10 @@ Source: `kaggle/02_llm_judge.ipynb` (Oct 2026). 1,617 held-out rows (hops 1–2 
 * Caveat on interpretation: the judge is never told the gold bridge entity (neither is the probe). The label is "did the hop name the gold bridge entity", which a grounding judge can only partly infer. This is the fair "text-only diagnoser" comparison the proposal asks for, but it is a weaker test than a fine-tuned diagnoser such as Doctor-RAG's.
 * The earlier Llama-3B-judge figures (61.7 % accuracy, 18.4 % confident-failure recall) turn out to be consistent with this re-run (0.184 recall); what was wrong before was the probe side and the comparison setup, not the judge itself.
 
-## 7. Causal patching (Phase 4) — TF-IDF setting, final (branch `cf-tfidf`, Oct 29)
+## 7. Causal patching (Phase 4) — TF-IDF setting, final (Oct 29)
 Pairs: the TF-IDF test-split counterfactuals (`cf_v1`), hedge + other_wrong_entity kinds; the first 219 in a fixed order, **211 informative** (clean run states the gold hop-1 entity, CF run does not). Clean and CF prompts differ only in the entity. Probe = the **tuned shared probe** (LR C = 0.01, block 12; the same model as `main:outputs/pipeline/tfidf/probes_lr_C0.01_L12`, weight cosine 1.0000); the old probe (C = 1, block 10) is reported alongside. Results: `outputs/patching/` — `patching_tfidf_results` (nb 05), `patching_tuned_results` (nb 08), `causal_tracing_tfidf` (nb 09), `probe_tracing_tfidf` (nb 10, + `analysis.md`), `extra_analysis.md`.
 
-**Threshold note.** The pipeline (Phases 3–5 on `main`) uses τ = 0.650 for this probe; the cf-tfidf bundle got τ = 0.585 from the same model (different CV folds; F0.5-optimal τ is flat and fold-sensitive). Flag rates below are given at **τ = 0.650** so the paper uses one threshold; AUROCs and correlations do not depend on τ.
+**Threshold note.** The pipeline (Phases 3–5 on `main`) uses τ = 0.650 for this probe; the patching bundle (`outputs/patching/patching_tuned_results/probes_c001_L12`) got τ = 0.585 from the same model (different CV folds; F0.5-optimal τ is flat and fold-sensitive). Flag rates below are given at **τ = 0.650** so the paper uses one threshold; AUROCs and correlations do not depend on τ.
 
 **A. Generation-based patching (nb 05): copy clean states into the CF run at block L; does hop 1 name the gold entity?** (n = 211)
 
@@ -140,6 +191,8 @@ Pairs: the TF-IDF test-split counterfactuals (`cf_v1`), hedge + other_wrong_enti
 
 **Limits:** one model; CF pairs are an induced, mostly hedging failure type; confident `copied_seed_entity` failures are caught at ≤ 22 % by every probe (nb 06/07); patches restore the input-side entity representation, the probed state alone (B) is null.
 
+**Paper figure:** `outputs/patching/causal_figure.{png,pdf}` (`scripts/make_causal_figures.py`): (a) logit tracing, 5 conditions with CIs and the block-14 handoff; (b) entity-span behaviour vs old / tuned probe restoration with the third-entity control; (c) pair-level recovery vs tuned-probe drop (within-pair r = +0.59, old +0.28).
+
 ## 7b. Earlier causal patching study — full10 setting (v4, Kaggle, Llama-3.2-3B, 51 token-aligned pairs)
 Superseded by §7 (more pairs, TF-IDF setting, no train leak). Note: the old probe's 51/51 CF detection here was inflated: the CFs were in its training data and it used a 0.5 threshold.
 Source: `kaggle/03_causal_patching.ipynb`, results in `outputs/patching/`. All checks passed (hook self-test, all-positions sanity = 51/51 restored, probe-link self-check cosine = 1.0, 0 errors). The clean and counterfactual (CF) prompts differ only in the swapped entity (median 5 tokens, 2–11); the CF run never states the right entity (0/51) and hedges ("not mentioned") in 86 % of pairs. Earlier patching results (v1 notebook, v2.0 run) are void.
@@ -165,9 +218,9 @@ Source: `kaggle/03_causal_patching.ipynb`, results in `outputs/patching/`. All c
 * **Limits (state these in the paper):** one model; 51 pairs, all from the counterfactual "entity not in context" type; success is a substring match on the generated hop; the patches restore the *input-side* representation of the entity, not the probed hop-boundary state itself (the latter is Experiment B, which is null). So Phase 4 shows *where the information the hop depends on is processed and that the probe's verdict follows it*; it does not show that the probed hop-1 state alone causes the failure.
 
 ## 8. Phases 3–5 — final run with the tuned probe (TF-IDF setting, Oct 30)
-Run: `pipeline_tfidf_v2_r2_shared_dense_probes_lr_C0.01_L12` (Havish, on `main`: `outputs/pipeline/tfidf_final_lrC0.01_L12/results.md`). Extra analyses on branch `eval-robustness`, all on the **same cached generations** (only the trigger differs): `robustness/robustness.md`, `selective/`, `error_budget/`, `uncertainty_early/` under `outputs/pipeline/tfidf_final_lrC0.01_L12/`. Scripts: `scripts/eval_robustness.py`, `selective_and_cost.py`, `error_budget_cases.py`, `uncertainty_early.py`.
+Run: `pipeline_tfidf_v2_r2_shared_dense_probes_lr_C0.01_L12` (Havish; `outputs/pipeline/tfidf_final_lrC0.01_L12/results.md`, every count in `full_stats.md`). All extra analyses act on the **same cached generations and restarts** (only the trigger differs), under `outputs/pipeline/tfidf_final_lrC0.01_L12/`: `robustness/`, `trigger_baselines.md`, `verifier_selection.md`, `selective/`, `error_budget/`, `hotpot_hops/`, `uncertainty_early/`; plus `outputs/pipeline/tfidf/online_probe/`, `outputs/pipeline/anticipatory_probe.md`, `latent_retrieval.md`. Scripts listed in §0.
 
-**Setting.** As in §8b below, but the probe is the tuned one (LR C = 0.01, block 12, shared for both hops, τ = 0.650 = F0.5-optimal on train-split CV). τ was 0.585 on `cf-tfidf` with the same weights: only the CV folds differ (sklearn 1.6 vs 1.8). This run also **forces an answer** from hops 1–2 when generation hits the token cap without `<answer>` (105 first answers, 441 restarts). That moved the baseline (0.334 → 0.342 on 2Wiki), so **never compare this run with §8b across runs**; use A2 below. 500 2Wiki + 500 HotpotQA questions; correct = token F1 ≥ 0.5; CIs are paired bootstraps over questions.
+**Setting.** As in §8b below, but the probe is the tuned one (LR C = 0.01, block 12, shared for both hops, τ = 0.650 = F0.5-optimal on train-split CV). τ was 0.585 in the patching bundle with the same weights: only the CV folds differ (sklearn 1.6 vs 1.8; §2b). This run also **forces an answer** from hops 1–2 when generation hits the token cap without `<answer>` (105 first answers, 441 restarts). That moved the baseline (0.334 → 0.342 on 2Wiki), so **never compare this run with §8b across runs**; use A2 below. 500 2Wiki + 500 HotpotQA questions; correct = token F1 ≥ 0.5; CIs are paired bootstraps over questions.
 
 **Headline.**
 
@@ -195,6 +248,10 @@ Run: `pipeline_tfidf_v2_r2_shared_dense_probes_lr_C0.01_L12` (Havish, on `main`:
 6. **Calibration:** ECE 0.024 (probe) vs 0.22–0.48 (judges); Brier 0.080 vs 0.25–0.49.
 7. **HotpotQA by type explains the weak OOD result:** bridge questions (n = 404) probe − none +0.079 [+0.042, +0.119], probe − judge +0.052 [+0.015, +0.089]; comparison questions (n = 96) ≈ 0 (the probe was trained on 2Wiki bridge chains).
 8. **The probe also verifies restarts:** on 2Wiki, restarts it still flags are 26 % accurate vs 72 % for restarts it clears.
+9. **Is the probe needed? Trivial triggers** (`trigger_baselines.md`, 2Wiki): hedge-keyword trigger 0.364, always restart after hop 1 0.448, random trigger at the probe's restart rate 0.465 ± 0.013 (all 200 seeds below the probe), a trained text trigger (TF-IDF + LR on the hop text) 0.516 (probe +0.022 [−0.004, +0.048]), always restart after hop 2 0.554. HotpotQA: random 0.550 ± 0.012, text trigger 0.576 (ties).
+10. **Choosing among candidate answers** (`verifier_selection.md`, 2Wiki): best of 3 (original, hop-1 restart, hop-2 restart) chosen by the probe 0.550 vs judge 0.506 vs random 0.462 (oracle choice 0.626); always restart + probe verification 0.542 vs judge verification 0.500. HotpotQA: judge verification is slightly better (0.592 vs 0.566; both within ±0.02 of always-restart).
+11. **Anticipation** (`outputs/pipeline/anticipatory_probe.md`): on questions whose hop 1 is correct, the hidden state at the end of hop 1 predicts that hop 2 will fail (test AUROC 0.82–0.83 at blocks 8–16) — far better than the hop-1 text (0.62), a "bridge entity has no page in the context" rule (0.68), or even an oracle rule that uses gold titles (0.72).
+12. **Latent retrieval** (`outputs/pipeline/latent_retrieval.md`): a ridge map from the hop state to a sentence-embedding query finds the missing paragraph far less often than the text query (hit@3 0.156 vs 0.438); blended at w = 0.25 it adds +0.025 (0.463). The hidden state is a good trigger, not a good query.
 
 **B. The hidden state knows what the output probabilities don't** (`uncertainty_early/`; one teacher-forced pass, Kaggle T4). The standard active-RAG triggers (FLARE: a low-probability token; DRAGIN-style: entropy) computed on the same hops, at the same moment, at the same cost.
 * Hop-failure AUROC on the probe's test split (1586 hops): **probe 0.954** vs mean entropy 0.677, max entropy 0.642, mean NLL 0.628, max NLL (FLARE) 0.592; an LR on all five 0.731. Probe + all five = 0.953: confidence adds nothing. Probe vs NLL Spearman ρ = +0.25.
@@ -271,12 +328,34 @@ Doctor-RAG reports 81.3 % diagnosis accuracy with a distilled, fine-tuned diagno
 1. On identical rows, hidden-state probes detect hop failures far better than off-the-shelf text judges up to 8B (§6: AUROC 0.96 vs ≤ 0.72).
 2. Used as a live repair trigger with the same retrieval and restart, a single probe is significantly more accurate than the post-hoc judge at its own decision rule and at every matched restart budget in domain, at least as accurate out of domain, and reaches the accuracy of always-restarting with 34 % fewer restarts, while detecting failures ~3× earlier at ~40 % lower token cost (§8). With accuracy-tuned thresholds the judges match that accuracy only by restarting almost everything (§8 A1).
 3. The probe sees failures the model's own token probabilities do not (AUROC 0.95 vs ≤ 0.68 for FLARE/DRAGIN-style signals; §8 B), so it is also a better trigger than confidence-based active RAG.
+4. The probe reads grounding, not wording, and follows causal interventions pair by pair (§7 D); the state predicts the failure before the hop's words differ (§8 B, AUROC 0.83 after ~3 identical tokens).
+
+Do **not** claim: higher maximum accuracy than the judges (§8 A1), that the probed state alone causes the failure (§7 A, Experiment B is null), or a compute speed-up from mid-hop stopping (§8 B: feasible, small saving).
 
 ## 10. Report checklist (from Anish, `experiment/distractor-rag`) — where each item stands
-1. Data-imbalance numbers — §1 (class balance) and the TF-IDF setting's hop-1 / hop-2 failure rates in §8.
-2. Counterfactuals: how and why — §1 (78 CFs, entity-not-in-context stratum).
-3. MLP vs logistic regression vs SVM — not in the v2 numbers; the old comparison script is in `legacy/generate_report_stats.py` (old labels — rerun before using).
+1. Data-imbalance numbers — §1 (full10) and §1b (TF-IDF: hop-1 19.6 %, hop-2 65.5 % failures).
+2. Counterfactuals: how and why — §1 (78 full10 CFs) and §1b (TF-IDF `cf_v1`: patching and evaluation only, never training; §7 D for why).
+3. MLP vs logistic regression vs SVM — not in the final numbers. Anish's probe suite (`lf_probe_suite.py`) is on his branch `experiment/distractor-rag`, not merged; the old comparison script is `legacy/generate_report_stats.py` (old labels — rerun before using). LR regularisation (C) and layer were tuned instead (§2b).
 4. Doctor-RAG with a fine-tuned diagnoser (~80 %) — not reproduced; see §9 for how to position it.
 5. Inference savings vs Doctor-RAG — §8 (3.2× earlier detection, 39 % fewer tokens; accuracy-vs-cost figure `selective/selective_and_cost.png`).
-6. "Internal doubt" on the timeline — §8: the probe flags at ~54 generated tokens vs ~170 for the judge; within a hop the signal builds up as the entity is written (§8 B).
-7. Probe accuracy on hedging vs confident failures — §3.
+6. "Internal doubt" on the timeline — §8: the probe flags at ~54 generated tokens vs ~170 for the judge; inside a hop the state predicts failure after ~3 tokens (§8 B), and the end of hop 1 already predicts a hop-2 failure (§8 A11).
+7. Probe accuracy on hedging vs confident failures — §3 (full10) and §2b (TF-IDF: recall 0.90 / 0.79).
+
+## 11. Figures for the paper
+Main text:
+1. `outputs/patching/causal_figure.{png,pdf}` — where the entity information lives, and the probe follows the restoration (§7).
+2. `outputs/pipeline/tfidf_final_lrC0.01_L12/uncertainty_early/uncertainty_early.{png,pdf}` — probe vs token confidence, and the signal inside the hop (§8 B).
+3. `outputs/pipeline/tfidf_final_lrC0.01_L12/selective/selective_and_cost.{png,pdf}` — panels (c)/(d): accuracy vs tokens for every system; (a)/(b): selective answering (§8 C).
+4. `outputs/pipeline/tfidf_final_lrC0.01_L12/accuracy_vs_restarts.png` — accuracy vs restart rate (Havish).
+
+Appendix: `robustness/reliability.png` (calibration), `outputs/pipeline/tfidf/online_probe/online_probe.png` (prefix probe; screenshot of the Kaggle figure — take the `.pdf` from the Kaggle output if used), `sweep.png` (τ sweep). Tables: `tables.tex` (main run), the error budget (§8 D) and the case study (§8 E).
+
+## 12. Limitations and future work (one list for the paper)
+* **One model** (Llama-3.2-3B-Instruct). A second model would need Phase 1 regenerated and relabelled → future work.
+* **Labels** mean "the hop states the gold bridge entity" (§1): detours count as failures; HotpotQA hop labels are automatic (§8 E2, validated at 97 % on 2Wiki).
+* **Judges are zero-shot**, not Doctor-RAG's fine-tuned diagnoser (§6, §9).
+* **Out of domain the detector degrades** (HotpotQA hop AUROC 0.74 / 0.68; 57 % of the oracle gain vs 94 % in domain) → train probes on more than one dataset.
+* **In domain the bottleneck is retrieval** (§8 D: 16 % of questions lost because the restart does not retrieve the missing paragraph; 22 % even with a perfect detector) → better repair retrieval; the hidden state is not a good query (§8 A12).
+* **Causal claims** are about the input-side entity representation and the probe's alignment with it; the probed state alone is not causal (§7 A, B). CF pairs are an induced, mostly hedging failure type.
+* **Repair design** was tuned after seeing early 2Wiki results (HotpotQA is the clean check). Answer forcing changed the baseline between runs (§8 setting).
+* **Mid-hop stopping** is feasible but its end-to-end effect is not measured (§8 B).
