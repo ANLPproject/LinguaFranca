@@ -1,0 +1,343 @@
+% ACL-style report. Build: pdflatex report; bibtex report; pdflatex report; pdflatex report
+\pdfoutput=1
+\documentclass[11pt]{article}
+
+\usepackage[]{acl}
+\usepackage{times}
+\usepackage{latexsym}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{microtype}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath}
+
+\title{Do Internal Failures Predict External Ones?\\
+Hidden-State Probes as Early Triggers for Repairing Multi-Hop RAG}
+
+\author{Navadeep Kiran \quad Havish Balaga \quad Anish Racherla \quad Yogansh \\
+  International Institute of Information Technology, Hyderabad}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Small language models answering multi-hop questions often resolve an early reasoning step wrongly and then build a fluent, confident answer on top of it. Repair frameworks such as Doctor-RAG notice this only after the full answer is written, by asking a second model to read it. We test whether a linear probe on the generating model's own hidden states can flag a failing hop the moment it is written, and whether that signal can trigger retrieval and a restart. On 2WikiMultihopQA with Llama-3.2-3B-Instruct, a logistic-regression probe at layer 12 detects failing hops with AUROC 0.947 (hop 1) and 0.925 (hop 2), against 0.56--0.78 and 0.56--0.73 for zero-shot LLM judges of up to 8B parameters and at most 0.68 for the token-confidence signals used by active retrieval. A 184M-parameter text diagnoser fine-tuned on the same labels matches the probe (AUROC 0.959 vs.\ 0.954), but needs a separate model pass per check, whereas the probe reuses states the generator has already computed. The signal is present after the first three tokens of a hop, while failing and correct hops still read identically. Used as a restart trigger, the probe raises answer accuracy from 34.2\% to 53.8\% (59.4\% with two restarts), against 45.4\% for the matched judge. Controls temper this result: restarting after every second hop, with no detector at all, reaches 55.4\%, so the probe's advantage is selectivity (34\% fewer restarts, half as many broken answers), not a higher accuracy ceiling. Activation patching shows where the information a hop depends on is processed and that the probe's score tracks it pair by pair, while patching the single hop-boundary state has no effect. An error budget, confirmed by a retrieval ablation, shows that the remaining bottleneck is retrieval, not detection.
+\end{abstract}
+
+\section{Introduction}
+
+Retrieval-augmented generation (RAG) lets a language model answer questions by composing facts from retrieved documents \citep{lewis2020retrieval}. For multi-hop questions, small models fail in a characteristic way: they resolve an early hop wrongly, or skip it, and then build a fluent answer on top of the mistake. Repair frameworks such as Doctor-RAG \citep{jiao2026doctor} detect this only after the whole trajectory has been generated, by asking a second model to read the text. This is costly, since a full faulty answer is produced and then re-read, and indirect, since the diagnosis rests on text that can look equally fluent whether it is right or wrong.
+
+We ask whether the generating model's own hidden states can flag a failing hop \emph{when the hop is written}. We train a logistic-regression probe on the mean hidden state of each hop, read it when the hop closes, and, if the score crosses a threshold, halt generation, retrieve evidence and restart. We compare it with zero-shot text judges, a fine-tuned text diagnoser, token-confidence triggers and trivial triggers under matched conditions: same model, same prompt, same repair, and only the decision to restart differs. Our research questions are:
+
+\begin{itemize}\itemsep0pt
+\item \textbf{RQ1} Can a probe detect and localize a failing hop at its boundary?
+\item \textbf{RQ2} Is the probed signal causally tied to the failure, or only correlated with it?
+\item \textbf{RQ3} How does the trigger compare with text-based diagnosis in detection, localization, cost and post-repair accuracy?
+\item \textbf{RQ4} At which layers does failure become decodable, and how robust are the conclusions to the choice of probe, threshold and baseline?
+\end{itemize}
+
+Our main findings are as follows.
+\begin{enumerate}\itemsep0pt
+\item The probe detects failing hops far better than zero-shot judges and token-confidence signals (AUROC 0.947/0.925 vs.\ at most 0.78/0.73), and flags a failure after about 54 generated tokens instead of 170. A text diagnoser fine-tuned on the same labels ties it, so the probe's edge over trained text models is cost, not information.
+\item As a trigger it gains +19.6 accuracy points on 2Wiki (+6.6 on HotpotQA) over no intervention, and +8.4 over the matched judge (95\% CI [+5.0, +11.8]).
+\item Honest controls limit the claim: always restarting after hop 2 matches the probe's accuracy, and judges given accuracy-optimal thresholds tie it. The probe's value is choosing \emph{which} questions to restart.
+\item The probe reads whether the hop is grounded in the context, not its wording, and tracks interventions on the entity representation (within-pair $r{=}+0.59$); but a single hop-boundary state is not causally sufficient. The signal is decodable after the first three tokens of a hop, before the text diverges.
+\item With a good detector the remaining errors are mostly retrieval failures (21.8\% of questions even for a perfect trigger); a stronger retriever lifts the probe pipeline by two points. Out of domain, detection rather than repair is what degrades.
+\end{enumerate}
+
+\section{Related Work}
+
+\paragraph{Diagnosing and repairing RAG failures.} Doctor-RAG \citep{jiao2026doctor} diagnoses a completed trajectory with a fine-tuned second model and repairs from the earliest failing step; Self-RAG \citep{asai2024selfrag} trains the generator to critique its own retrievals, and IRCoT \citep{trivedi2023interleaving} interleaves retrieval with chain-of-thought steps. Process reward models \citep{lightman2024lets} score each step but need a separately trained verifier and operate on text. We keep the repair simple and vary only the trigger, and we compare against both zero-shot judges and a diagnoser fine-tuned on our labels.
+
+\paragraph{When to retrieve.} FLARE \citep{jiang2023active} retrieves when the model emits a low-probability token and DRAGIN \citep{su2024dragin} uses token entropy. Probing-RAG \citep{baek2025probing} probes hidden states, but at the level of a whole query, to decide whether another retrieval round is needed. We probe individual hops and compare against FLARE-style and entropy signals computed on the same hops, both for detection and end to end.
+
+\paragraph{Probing internal states.} Hidden states of language models encode whether a statement is true or whether the model knows the answer \citep{azaria2023internal,kadavath2022language,burns2023discovering}. We follow standard probing practice, with linear probes \citep{alain2017understanding}, grouped splits, shuffled-label controls \citep{hewitt2019designing} and caution about what a probe's accuracy shows \citep{belinkov2022probing}.
+
+\paragraph{Causal analysis.} Activation patching and causal tracing \citep{meng2022locating,vig2020investigating,zhang2024towards} test whether a representation is sufficient to restore a behaviour. We use them on minimal pairs to ask where the information a hop depends on is processed and whether the probe follows it.
+
+\section{Task and Data}
+
+\paragraph{Questions and context.} We use 2WikiMultihopQA \citep{ho2020constructing}, whose gold reasoning graph gives the entity each hop should state. We sample 4,000 questions (seed 42) of the true two-step chain types and drop comparison questions. Each question comes with 10 paragraphs (2 gold, 8 distractors). To mimic a weak first-stage search, TF-IDF keeps the top 5. Both gold paragraphs survive for only 41\% of questions. Because the question names only the hop-1 entity, TF-IDF almost always keeps the hop-1 paragraph and drops the hop-2 one. On the 500 evaluation questions, 203 keep both, 282 miss the hop-2 paragraph, 6 miss the hop-1 paragraph and 9 miss both.
+
+\paragraph{Model and format.} Llama-3.2-3B-Instruct \citep{dubey2024llama} (fp16, greedy, at most 400 new tokens) writes \texttt{<hop1>}\ldots\texttt{</hop1>}, \texttt{<hop2>}\ldots\texttt{</hop2>} and \texttt{<answer>}, which gives exact token boundaries for pooling.
+
+\paragraph{Hop labels.} A hop is labelled a failure if its text does not state that hop's gold entity. The check runs from cheap to expensive: normalized string match, a Wikidata alias table, sentence-embedding similarity $\geq 0.70$ \citep{reimers2019sentence}, and an LLM judge as last resort. Hops beyond the two gold ones are unlabelled. On the held-out split, hop 1 fails in 17.4\% of cases and hop 2 in 65.0\%; 10.8\% of failing hops are hedges (``there is no information about \ldots''), the rest are confident wrong or off-target statements. When hop 1 succeeded, hop 2 still fails 41.6\% of the time with both gold paragraphs present and 82.8\% when the hop-2 paragraph is missing; only 19\% of hop-2 failures follow a failed hop 1, so error compounding explains little. An audit of the labeler (Appendix~\ref{app:labels}) finds under 0.5\% label noise from formatting or aliases.
+
+\paragraph{Splits and evaluation sets.} A grouped 80/20 split gives 3,200 training and 800 held-out questions (6,325 / 1,586 labelled hops). Layers, hyper-parameters and thresholds are chosen by 5-fold grouped cross-validation inside the training split. End-to-end systems are evaluated on 500 held-out 2Wiki questions and on 500 HotpotQA \citep{yang2018hotpotqa} validation questions (404 bridge, 96 comparison) as an out-of-domain test.
+
+\section{Method}
+
+Figure~\ref{fig:pipeline} gives an overview of the system.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.92\textwidth]{figures/pipeline.pdf}
+\caption{The probe-triggered restart system. When a hop closes, the probe scores the pooled layer-12 hidden state. If $P(\text{fail})<\tau$ generation continues; otherwise it halts, retrieves with the hop text, and restarts from scratch with the evidence prepended. All compared systems share the model, prompt and repair; only this decision differs.}
+\label{fig:pipeline}
+\end{figure*}
+
+\paragraph{Probe.} The feature is the mean of the block-$L$ hidden states over the tokens of a hop (3,072 dimensions). The probe is a standardizer followed by class-balanced logistic regression with $C{=}0.01$, one shared probe for both hops (dedicated probes are an ablation). We use layer 12, which lies on the cross-validation plateau (Section~\ref{sec:design}). The scores are Platt-calibrated \citep{platt1999probabilistic} (ECE 0.019 on the held-out split, 0.024 on the live evaluation hops), and the trigger threshold $\tau{=}0.650$ maximizes $F_{0.5}$ on out-of-fold training predictions. $F_{0.5}$ favours precision, to avoid pointless restarts.
+
+\paragraph{Live system.} Generation runs token by token with a KV cache and forward hooks that copy each block's output. When \texttt{</hopK>} ($K{=}1,2$) is generated, the hop's tokens are pooled and scored (about 9.5\,ms); if $P(\text{fail})\geq\tau$ generation halts. Features agree with those used to train the probe (cosine 0.99999).
+
+\paragraph{Repair.} The retrieval query is the question plus the failing hop's text; for hop 2 the bridge entity from hop 1 comes first, because a failing hop 2 is often a hedge that does not name what to look up. Passages come from a pool of 94,031 paragraphs (13,719 from the 4,000 questions, 4,871 from the HotpotQA evaluation questions, 75,441 from 20,000 other 2Wiki questions). We embed with MiniLM \citep{reimers2019sentence}, search exactly with FAISS \citep{johnson2019billion}, re-rank the top 20 with a cross-encoder \citep{nogueira2019passage}, and prepend the top 3 paragraphs not already in the prompt. The KV cache is discarded and the answer regenerated from scratch (``Naive Restart''); a restart that is flagged again triggers at most one more. If generation hits the token cap without an answer, the answer is forced from hops 1--2 (105 first answers, 441 restarts), for every system alike. The pool contains the gold paragraphs of the evaluation questions, as a real Wikipedia index would, so retrieval is easier than open-web search.
+
+\paragraph{Systems compared.} All share the model, prompt and repair: (i) no intervention; (ii) always retrieve with the question before generating; (iii) a judge trigger: after the full answer the same 3B model is asked, zero-shot, whether each hop is correct, with $P(\text{fail})$ read from the yes/no logits and the earliest failing hop repaired (we also run Qwen2.5-3B/7B \citep{yang2024qwen25} and Llama-3.1-8B judges); (iv) a \emph{fine-tuned text diagnoser}, the analogue of Doctor-RAG's trained diagnoser: a DeBERTa-v3-base cross-encoder \citep{he2023debertav3} (184M parameters) fine-tuned on the probe's exact training rows and labels, reading the question, the earlier step, the step to check and the context (at most 512 tokens), with epoch and threshold chosen on 10\% of the training questions; (v) always restart after hop 2 (or hop 1); (vi) a hedge-keyword trigger; (vii) a text classifier (TF-IDF and logistic regression on the hop text, trained on the probe's training rows); (viii) a random trigger at the probe's restart rate; (ix) token-confidence triggers (maximum and mean token negative log-likelihood as in FLARE, maximum and mean entropy as in DRAGIN), computed on the same hops at the same moment, each with its own threshold chosen on the training split; (x) an oracle that restarts at the first truly failing hop, which upper-bounds any trigger.
+
+\paragraph{Evaluation.} An answer is correct if its token F1 with the gold answer is $\geq 0.5$ (exact match is also reported). Greedy decoding is deterministic, so a halted answer is an exact prefix of the full one; every system and threshold is therefore computed from cached generations and restarts, and 100 questions are also run fully live (same trigger and restart count for all 100, same correctness for 99). Confidence intervals are paired bootstraps over questions (2,000 resamples).
+
+\section{Results}
+
+\subsection{Detecting failing hops (RQ1)}
+
+\begin{table}[t]
+\centering\small
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lccc}
+\toprule
+Detector & Hop 1 & Hop 2 & Pooled \\
+\midrule
+\multicolumn{4}{l}{\emph{Live 2Wiki hops (n=499 / 492)}} \\
+Probe (ours) & \textbf{0.947} & 0.925 & -- \\
+Fine-tuned text diagnoser (184M) & 0.933 & \textbf{0.931} & -- \\
+Judge Llama-3.2-3B (zero-shot) & 0.569 & 0.678 & -- \\
+Judge Llama-3.1-8B (zero-shot) & 0.597 & 0.729 & -- \\
+Judge Qwen2.5-3B (zero-shot) & 0.558 & 0.562 & -- \\
+Judge Qwen2.5-7B (zero-shot) & 0.779 & 0.690 & -- \\
+\midrule
+\multicolumn{4}{l}{\emph{Test split, 1,586 hops}} \\
+Probe (ours) & 0.941 & 0.931 & 0.954 \\
+Fine-tuned text diagnoser (184M) & 0.939 & 0.936 & \textbf{0.959} \\
+TF-IDF on hop text & -- & -- & 0.769 \\
+LR on all five confidence signals & -- & -- & 0.731 \\
+Mean token entropy & -- & -- & 0.677 \\
+Max token entropy (DRAGIN-style) & -- & -- & 0.642 \\
+Mean token NLL & -- & -- & 0.628 \\
+Max token NLL (FLARE) & -- & -- & 0.592 \\
+\bottomrule
+\end{tabular}}
+\caption{Hop-failure detection, AUROC. Judges are zero-shot and read the whole answer; the diagnoser is fine-tuned on the probe's training labels; the probe reads the hidden state at the hop boundary. Probe vs.\ diagnoser on the test split: $-0.005$ [$-0.013$, $+0.004$].}
+\label{tab:detect}
+\end{table}
+
+Table~\ref{tab:detect} shows that the probe separates failing from correct hops much better than every zero-shot judge, whatever its size, and than all token-confidence signals; an LR on all five confidence features reaches only 0.731, and adding them to the probe does not help (0.953). Where FLARE stays silent (958 hops), the probe still reaches AUROC 0.958 and flags 259 of the 334 failures it misses. The probe localizes the first failing hop in 74.4\% of failing trajectories (judge 24.8\%) and is far better calibrated (ECE 0.024 against 0.22--0.48 for the judges). It fires after 54 generated tokens on average, against 170 for the judge, which must wait for the full answer.
+
+\paragraph{A trained text model closes the gap.} The fine-tuned diagnoser matches the probe: 0.959 [0.949, 0.968] against 0.954 [0.944, 0.964] on the test split (difference $-0.005$ [$-0.013$, $+0.004$]), with similar recall on confident failures (0.81 vs.\ 0.79) and scores that correlate strongly ($\rho{=}0.85$). The failure is therefore recoverable from text and context given supervision; the zero-shot judges fail for lack of it, not because the text cannot carry the signal. The difference is cost: each diagnoser check is a separate 184M-parameter pass over about 370 tokens (37.8\,ms on a T4) after a GPU fine-tuning run, whereas the probe is one dot product on states the generator has already computed and is trained in seconds.
+
+\paragraph{Where it errs.} At the deployed threshold the probe misses 40\% of failing hop-1 steps and 15\% of hop-2 steps; 70--80\% of its false alarms occur on trajectories whose final answer is wrong anyway.
+
+\subsection{Probe design and layers (RQ4)}
+\label{sec:design}
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.98\textwidth]{figures/auroc_by_layer_tfidf.png}
+\caption{Test AUROC by layer (output of block $L$) for four probes on the TF-IDF setting: default logistic regression (C=1), tuned logistic regression, linear SVM and an MLP. Failure becomes linearly decodable from about layer 8 and plateaus over layers 9--15.}
+\label{fig:layers}
+\end{figure*}
+
+Failure becomes linearly decodable from about layer 8 and plateaus over layers 9--15, then declines (Figure~\ref{fig:layers}); hop-1 cross-validation AUROC is 0.934--0.943 over layers 10--15 against 0.827 at layer 0. We compared four probes on every layer in two settings: the TF-IDF top-5 context used by the pipeline and the all-10-passage context of our first experiments (Table~\ref{tab:models}); hyper-parameters were chosen by cross-validation on the training split and layers likewise.
+
+\begin{table}[t]
+\centering\small
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{llcccc}
+\toprule
+Setting & Task & Default LR & Tuned LR & SVM & MLP \\
+\midrule
+TF-IDF & Hop 1 & 0.931 & 0.946 & 0.952 & \textbf{0.959} \\
+ & Hop 2 & 0.916 & 0.924 & 0.924 & \textbf{0.940} \\
+ & Pooled & 0.935 & 0.950 & 0.950 & \textbf{0.964} \\
+\midrule
+All 10 & Hop 1 & 0.955 & \textbf{0.965} & 0.960 & 0.955 \\
+ & Hop 2 & 0.946 & 0.955 & 0.954 & \textbf{0.969} \\
+ & Pooled & 0.954 & \textbf{0.964} & 0.963 & 0.963 \\
+\bottomrule
+\end{tabular}}
+\caption{Test AUROC of the four probes at their cross-validation-selected layers. Intervals and paired tests are in Appendix~\ref{app:paired}.}
+\label{tab:models}
+\end{table}
+
+Paired bootstrap tests on identical test rows give four conclusions. (i) Tuning the regularization (C=0.01) is supported: pooled +0.015 [+0.011, +0.021] on TF-IDF and +0.010 [+0.006, +0.014] on all-10. (ii) A linear SVM equals tuned LR in every task. (iii) The MLP is better on hop 2 in both settings (+0.016 and +0.014) and pooled only on TF-IDF (+0.014 [+0.008, +0.019]); on the all-10 pooled task it is not (-0.001 [-0.009, +0.007]). (iv) At 3\% false alarms on TF-IDF, pooled recall rises from 0.587 (default LR) to 0.680 (tuned) and 0.770 (MLP). Moving the deployed probe from C=1 at block 10 to C=0.01 at block 12 raised end-to-end 2Wiki accuracy by +0.032 [+0.016, +0.050] on identical generations. We did not run the MLP end to end, because the probe already obtains 94\% of the oracle's gain (below), leaving about one point of headroom. Shuffled-label controls give AUROC 0.46--0.51 for every model, so the signal is not an artefact of the splits.
+
+With distractors and missing evidence, hop-2 detection is about 0.03 AUROC worse for every model (all-10 minus TF-IDF: +0.031 [+0.007, +0.057] for tuned LR), whereas hop-1 and pooled detection are not clearly worse once the probe is tuned (pooled gap +0.014 [0.000, +0.028] for tuned LR, none for the MLP).
+
+\subsection{End-to-end repair (RQ3)}
+
+\begin{table*}[t]
+\centering\small
+\begin{tabular}{lcccccc}
+\toprule
+ & \multicolumn{3}{c}{2WikiMultihopQA} & \multicolumn{3}{c}{HotpotQA (out of domain)} \\
+\cmidrule(lr){2-4}\cmidrule(lr){5-7}
+System & Acc. & Restarts & Fixed/broken & Acc. & Restarts & Fixed/broken \\
+\midrule
+No intervention & 0.342 & 0.00 & -- & 0.504 & 0.00 & -- \\
+Always retrieve (before generation) & 0.356 & 1.00 & 30/23 & 0.546 & 1.00 & 72/51 \\
+Judge, same 3B model ($\theta{=}0.5$) & 0.454 & 0.46 & 63/7 & 0.526 & 0.23 & 24/13 \\
+Judge, Qwen2.5-7B (best of four) & 0.508 & 0.63 & 91/8 & 0.546 & 0.49 & 49/28 \\
+Token confidence, max NLL (FLARE-style) & 0.454 & 0.62 & 68/12 & 0.564 & 0.70 & 67/37 \\
+Text classifier on hop text & 0.516 & 0.70 & 98/11 & 0.576 & 0.82 & 75/39 \\
+Fine-tuned text diagnoser (184M) & 0.534 & 0.64 & 107/11 & 0.570 & 0.72 & 67/34 \\
+Random at the probe's restart rate & 0.465 & 0.63 & 74/13 & 0.550 & 0.57 & 52/29 \\
+Always restart after hop 2 & 0.554 & 0.98 & 126/20 & \textbf{0.586} & 0.97 & 89/48 \\
+\textbf{Probe trigger (ours)} & 0.538 & 0.64 & 108/10 & 0.570 & 0.59 & 55/22 \\
+\textbf{Probe, up to 2 restarts} & \textbf{0.594} & 0.64 & 133/7 & 0.564 & 0.59 & 60/30 \\
+Oracle trigger (gold labels) & 0.550 & 0.69 & 114/10 & -- & -- & -- \\
+\bottomrule
+\end{tabular}
+\caption{End-to-end accuracy (token F1 $\geq 0.5$), 500 questions per dataset, one restart unless stated. ``Fixed/broken'' counts answers turned from wrong to right and from right to wrong. The random trigger is the mean of 200 seeds ($\pm$0.013 on 2Wiki). The other token-confidence triggers (mean NLL, maximum and mean entropy) reach 0.454--0.456 on 2Wiki.}
+\label{tab:e2e}
+\end{table*}
+
+Table~\ref{tab:e2e} and Figure~\ref{fig:budget} give the main comparison.
+
+\paragraph{The probe trigger helps, and beats the zero-shot judges.} On 2Wiki the probe gains +0.196 [+0.156, +0.236] over no intervention and beats the same-model judge by +0.084 [+0.050, +0.118]; with up to two restarts it reaches 0.594, higher than any other system including the one-restart oracle (0.550). Exact match shows the same ranking (0.406 against 0.258 for no intervention and 0.326 for the judge). On HotpotQA it gains +0.066 [+0.034, +0.098]; its lead over the same-model judge is +0.044 [+0.010, +0.078], and over the 7B judge (+0.024) it is not significant ([$-$0.004, +0.056]). Token-confidence triggers land at the judges' level on 2Wiki (0.454--0.456; probe ahead by about +0.08 with intervals above zero). The probe is also cheaper: 1,574 processed tokens per question against 2,576 for the judge (39\% fewer).
+
+\paragraph{A fine-tuned diagnoser ties it.} The DeBERTa diagnoser reaches 0.534 on 2Wiki (probe $+0.004$ [$-0.016$, $+0.024$]) and 0.570 on HotpotQA (identical), and every matched-budget difference has an interval containing zero; on HotpotQA it needs more restarts for the same accuracy (0.72 vs.\ 0.59). End to end, as in detection, the probe matches a trained text diagnoser without its second model.
+
+\paragraph{But a detector is not strictly needed for accuracy.} Restarting after every hop 2 reaches 0.554 on 2Wiki (probe minus trigger $-0.016$ [$-0.038$, +0.006]) and 0.586 on HotpotQA, with 98\% of questions restarted instead of 64\% and twice as many broken answers (20 against 10). On 2Wiki, a random trigger at the same restart rate reaches only 0.465 (below the probe in all 200 seeds) and the text classifier 0.516. Most of the end-to-end gain therefore comes from the repair, because hop 2 fails 65\% of the time. What the probe adds is selectivity: at matched restart budgets of 40--70\% it beats every judge on 2Wiki with all intervals above zero (e.g.\ at 60\%: 0.524 against 0.456--0.504), and it matches always-restarting with 34\% fewer restarts.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.78\textwidth]{figures/accuracy_vs_restarts.png}
+\caption{Accuracy at a matched restart budget: each trigger restarts the questions it considers most likely to have failed. On 2Wiki the probe is best or tied from a 20\% budget on (at 10\%, Qwen2.5-3B is ahead); judges plateau or fall because their scores are poorly ranked. The filled diamond is always restarting after hop 2.}
+\label{fig:budget}
+\end{figure*}
+
+\paragraph{Fair thresholds.} If every judge receives the same accuracy-optimal threshold the probe's accuracy-optimal row uses, judges collapse to restarting 93--99\% of questions and tie the probe (probe 0.554, judges 0.518--0.558). We therefore do \emph{not} claim a higher maximum accuracy than the judges: the maximum is set by always restarting. Robustness checks do not change the conclusions: on 2Wiki the probe beats the judge at every $\tau$ from 0.30 to 0.90, forced answers do not matter when counted as wrong, and the probe also verifies restarts (restarts it still flags are 26\% accurate, those it clears 72\%).
+
+\paragraph{HotpotQA.} The probe was trained on 2Wiki bridge chains. On the 404 bridge questions it gains +0.079 [+0.042, +0.119] over no intervention and +0.052 [+0.015, +0.089] over the judge, while on the 96 comparison questions it gains nothing (+0.010 [$-$0.062, +0.083]). With automatic hop labels for bridge questions (Appendix~\ref{app:hotpot}), hop-1 detection AUROC drops to 0.738 but stays above the judges (at most 0.64); hop-2 detection (0.675) only ties them (0.60--0.67) and token entropy (0.70). On these questions an oracle trigger reaches 0.628 against the probe's 0.564 (no intervention 0.479): out of domain the probe captures 57\% of the oracle's gain, against 94\% on 2Wiki, so what degrades is detection, not the repair.
+
+\subsection{Where the remaining errors come from}
+
+\begin{table}[t]
+\centering\small
+\begin{tabular}{lrrr}
+\toprule
+Stage that broke (\% of questions) & Probe & Judge & Oracle \\
+\midrule
+No hop failed, answer wrong & 5.6 & 6.8 & 7.4 \\
+Detector missed the failing hop & 8.6 & 25.4 & 0.4 \\
+Detector flagged the wrong hop & 4.8 & 12.6 & 0.0 \\
+Restart: evidence already present & 4.2 & 1.2 & 7.2 \\
+Restart: retrieval missed gold & 16.2 & 6.6 & 21.8 \\
+Restart: gold found, still wrong & 6.8 & 2.0 & 8.2 \\
+\midrule
+All errors & 46.2 & 54.6 & 45.0 \\
+\bottomrule
+\end{tabular}
+\caption{Error budget on 2Wiki: each wrong final answer is assigned to the first stage that broke (one restart).}
+\label{tab:budget}
+\end{table}
+
+Table~\ref{tab:budget} shows that detection costs the probe 13.4\% of questions and the judge 38.0\%, but even a perfect trigger loses 21.8\% to retrieval. When the restart retrieves a missing gold paragraph accuracy is about 72\%, otherwise 12--13\%. Restarts at hop 2 are far more useful than restarts at hop 1: hop-2 restarts raise accuracy from 0.189 to 0.544 (101 fixed, 9 broken, $n{=}259$) and find a missing gold paragraph in 53\% of cases, while hop-1 restarts raise it from 0.049 to 0.148 (7 fixed, 1 broken, $n{=}61$) and find it in only 25\%. The hop-1 paragraph is present in 97\% of questions, so hop-1 failures are mostly misreadings of evidence that is already there (51\% restate the question's subject, 41\% copy a distractor's entity), not missing evidence; retrieval cannot repair them.
+
+\paragraph{A retrieval ablation confirms it.} Keeping the probe and the first pass fixed and changing only the restart's retriever to a fusion of dense and BM25 rankings (cross-encoder re-ranking of the top 30) finds the missing hop-2 paragraph in 66\% of restarts instead of 53\%, and raises the probe pipeline on 2Wiki from 0.538 to 0.558 (0.604 with two restarts; broken answers 10 to 5), at 154 instead of 105\,ms per retrieval. On HotpotQA it does not help (0.550). Better retrieval, not better detection, is the next lever in domain. The hidden state itself is a poor query: a linear map from the hop state to the retrieval embedding finds the missing paragraph far less often than the text query (hit@3 0.156 vs.\ 0.438).
+
+\subsection{What does the probe read? (RQ2)}
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{figures/causal_figure.pdf}
+\caption{Causal analysis on 183--211 minimal pairs. (a) Recovery of the clean hop-1 log-probability when the clean states of a position group are patched into the counterfactual run, by block; the entity information moves from the entity tokens to the following tokens and is handed off around block 14. (b) Fraction of behaviour and of the probe's score restored when the entity span is patched; the probe reads block 12, so it lags behaviour. (c) Pair by pair, the more behaviour is restored, the more the probe's score falls (within-pair $r{=}+0.59$; old probe $+0.28$).}
+\label{fig:causal}
+\end{figure*}
+
+We build minimal pairs by swapping the question's entry entity for another entity of the same token length, so that the clean and counterfactual prompts differ only in that entity (211 informative pairs where the clean run states the gold hop-1 entity and the counterfactual run does not). Counterfactuals are used only for this analysis, never for training. We copy the clean run's block-$L$ states into the counterfactual run at chosen positions and ask whether hop 1 now names the gold entity.
+
+\paragraph{Where the information is processed.} Patching the entity tokens restores hop 1 in 100\% of pairs at block 0, 90\% at block 8, 73\% at block 10, 45\% at block 12, 19\% at block 14 and 8\% at block 24. A control that inserts a third, unrelated entity restores only 6--16\%, so the effect is entity-specific through block 13 (entity minus control +0.30 at block 11, +0.24 at block 13, +0.07 at block 14, not significant by block 24). The tokens after the entity carry the information over blocks 9--13 (up to 0.50 restored); the last prompt token restores at most 7\%. A logit-based tracing on 183 pairs confirms a sharp hand-off between blocks 13 and 14 (entity span 0.48 to 0.08; last prompt token 0.13 to 0.29) (Figure~\ref{fig:causal}a).
+
+\paragraph{A single hop-boundary state is not causal.} Overwriting only the state at \texttt{</hop1>} restores the answer in at most 1\% of pairs at blocks 8--20. This null result means we do \emph{not} show that the probed boundary state alone causes the failure.
+
+\paragraph{The probe reads grounding, not wording.} Holding the hop-1 text fixed (teacher-forced) and changing only the question's entity, the tuned probe separates clean from counterfactual with AUROC 0.960 (old probe: 0.911), and its score rises in 99\% of pairs when the true entity is ablated more than when a third entity is. Pair by pair, behaviour restored by a patch predicts the probe's score restored (within-pair $r{=}+0.59$ [+0.54, +0.64]; old probe $+0.28$). The tuned probe also follows the third-entity control ($r{=}+0.37$), so it tracks how well the context supports the hop under any intervention. Natural accuracy cannot tell layers 10 and 12 apart (AUROC 0.92--0.94 for both), but causal alignment can ($r$ 0.51--0.62 at block 12 against 0.20--0.46 at block 10); this supports layer 12. A direction estimated from counterfactual pairs separates held-out pairs perfectly but natural failures only weakly (AUROC 0.57--0.72), whereas the naturally trained probe transfers to counterfactuals (0.96), which is why we never train on them.
+
+\subsection{Beyond hop-end detection}
+
+Four further analyses use the same generations. (i) \emph{The signal is early.} A probe trained on partial hops (thresholds chosen on training data) reaches AUROC 0.834 after the first 10\% of a hop (about three tokens), 0.885 at half the hop and 0.929 at its end, while 95\% of failing and 99\% of correct hops open with the identical words ``From the context, I find'', and hedges are only 11\% of failures. Token-confidence signals on the same prefixes stay at or below 0.68. (ii) \emph{Stopping mid-hop keeps accuracy.} A hybrid trigger that stops a hop early when the partial-hop probe is very confident, and otherwise checks at \texttt{</hopK>}, keeps detection quality ($F_{0.5}$ 0.871 vs.\ 0.878) and stops 60\% of caught failures early. Measured end to end, with every changed restart re-retrieved and regenerated, it reaches 0.554 on 2Wiki (+0.016 [$-0.004$, $+0.036$]) and 0.562 on HotpotQA (n.s.): the shorter query finds a missing gold paragraph as often as the full one (58.8\% vs.\ 56.4\%). It saves generated tokens ($-7\%$) but not total compute, and over-fires out of domain. (iii) At the end of hop 1, the hidden state predicts that hop 2 will fail with AUROC 0.82, against 0.62 for the hop-1 text and 0.72 for a rule that uses the gold titles. (iv) Used for selective answering, the probe's risk-coverage error is 0.418 against 0.528--0.615 for the judges; the full system answers 74.8\% correctly on the half of the questions it answers.
+
+\section{Discussion}
+
+The probe works as a detector, and detection is no longer the limiting step. It reads something real (grounding of the hop in its context), it is cheap, calibrated and early, and it chooses restarts better than any zero-shot judge or confidence signal we tried. A text diagnoser fine-tuned on the same labels does as well, which locates the probe's advantage precisely: not in information the text lacks, but in obtaining a trained diagnoser's accuracy from states the generator already computes, during generation, with an interpretable, causally checked signal. With this repair, restarting after hop 2 almost always is as accurate, the probe obtains 94\% of the oracle trigger's gain, and the errors that remain come from retrieval and from hop-1 misreadings; a stronger retriever confirms this by lifting the pipeline. In deployment terms the probe is therefore a way to spend fewer restarts for the same accuracy, with half the broken answers, rather than a way to raise the accuracy ceiling.
+
+\section*{Limitations}
+
+Results use one 3B model, two-hop questions and a simulated first-stage retriever; we did not run a second model. The fine-tuned diagnoser is one model size (DeBERTa-v3-base) trained with one seed, and the judges are zero-shot. The repair was designed after seeing early 2Wiki results on the same evaluation questions; HotpotQA is the clean check, and there the probe's advantage is smaller, its detection degrades, and it is not significant against the best judge. The probe is trained on 2Wiki bridge chains and does not transfer to comparison questions. HotpotQA hop labels are automatic (validated against the 2Wiki labels at 97\%). The retrieval pool contains the evaluation questions' own paragraphs, which is easier than open-web search. The accuracy metric (token F1 $\geq 0.5$) is lenient on dates (about two accuracy points on baseline answers, Appendix~\ref{app:labels}); exact match is reported and gives the same ranking. Counterfactual pairs are mostly hedging failures: confident failures where the model copies a distractor entity are caught at most 22\% of the time by every probe. Mid-hop stopping keeps accuracy but saves no total compute. Probe-model differences rest on one split of 800 questions and a single MLP seed, and about 60 paired comparisons were made without correction for multiple testing.
+
+\section{Conclusion}
+
+A linear probe on a language model's hidden states detects failing reasoning hops at the hop boundary far better than zero-shot text judges and token confidence, as well as a text diagnoser fine-tuned on the same labels at a fraction of its cost, localizes the first failure, carries its signal from the first tokens of a hop, and as a restart trigger yields large, significant gains with fewer and better-chosen restarts. Activation patching locates where the supporting information is processed and shows that the probe tracks it, while also showing that the boundary state alone is not sufficient. Honest controls show that most of the end-to-end gain comes from the repair, and an error budget and a retrieval ablation show that retrieval is now the bottleneck in domain, and detection out of domain. Future work should improve repair retrieval and hop-1 repair, train probes on several datasets, and test the findings on other models.
+
+\bibliography{references}
+\bibliographystyle{acl_natbib}
+
+\appendix
+
+\section{Data and Label Quality}
+\label{app:labels}
+
+\begin{table}[h]
+\centering\small
+\begin{tabular}{lrr}
+\toprule
+ & Questions & Hop rows \\
+\midrule
+Sampled 2Wiki questions & 4,000 & 8,000 \\
+Train split & 3,200 & 6,325 \\
+Held-out split & 800 & 1,586 \\
+End-to-end 2Wiki / HotpotQA & 500 / 500 & -- \\
+Retrieval pool (paragraphs) & \multicolumn{2}{r}{94,031} \\
+\bottomrule
+\end{tabular}
+\caption{Data sizes. Hop rows exclude hops the model never generated (89 of 8,000 labelled rows).}
+\end{table}
+
+\paragraph{Failure by evidence.} On the held-out split, hop-2 failures given a correct hop 1: 126 of 303 (41.6\%) with both gold paragraphs present, 284 of 343 (82.8\%) with only the hop-1 paragraph. The TF-IDF first stage keeps both gold paragraphs for 40.4\% of held-out questions, only the hop-1 paragraph for 56.2\%, only the hop-2 paragraph for 1.2\% and neither for 2.1\%.
+
+\paragraph{Labeler audit.} The Wikidata alias table contributed no matches in the TF-IDF labels and 27 in the all-10 labels. A lookup of all 1,405 relevant gold entities against Wikidata would flip 0 of 1,167 audited failure labels (all-10) and 2 of 2,053 (TF-IDF). A date rule (same year, month and day in different formats) flips 13 and 1 labels. In total, label noise from these sources is well under 0.5\%.
+
+\paragraph{Answer metric.} On the 4,000 baseline answers, exact match is 26.2\% and F1 $\geq 0.5$ is 35.0\%. Of the 351 answers counted correct without an exact match, 77 are fair date reformattings, 192 mostly fair (``Moscow, Russia'' for Moscow), and 82 too lenient (a year for a full date, or a wrong month); these inflate baseline accuracy by about two points. The same metric applies to all systems and exact match ranks them identically.
+
+\section{Probe Suite Details}
+\label{app:paired}
+
+All probes use mean-pooled hop states, a grouped 80/20 split (seed 42), 5-fold grouped cross-validation on the training split for layer selection and tuning, and one evaluation on the held-out split. Chosen hyper-parameters (LR/SVM $C$; MLP hidden size, $L_2$): TF-IDF LR $C{=}0.01$ (0.001 for hop 2), SVM $C{=}10^{-4}$ to $10^{-3}$, MLP (256, 0.01) for pooled hops; several choices lie at the edge of the grid. The default logistic regression reproduces the deployed pipeline probe to three decimals (layer 10: 0.933 / 0.910 / 0.931 for hop 1 / hop 2 / pooled), and the saved probes reload to the stored AUROC exactly. Table~\ref{tab:paired} lists the paired tests behind Table~\ref{tab:models}.
+
+\begin{table*}[t]
+\centering\small
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lcccccc}
+\toprule
+ & \multicolumn{3}{c}{All 10 passages} & \multicolumn{3}{c}{TF-IDF top 5} \\
+\cmidrule(lr){2-4}\cmidrule(lr){5-7}
+Difference in AUROC & Hop 1 & Hop 2 & Pooled & Hop 1 & Hop 2 & Pooled \\
+\midrule
+Tuned LR $-$ default LR & +.010 [$-$.005, +.028] & +.009 [+.004, +.014] & +.010 [+.006, +.014] & +.015 [+.001, +.030] & +.008 [$-$.007, +.022] & +.015 [+.011, +.021] \\
+SVM $-$ tuned LR & $-$.005 [$-$.017, +.006] & $-$.001 [$-$.003, +.001] & $-$.002 [$-$.004, .000] & +.006 [$-$.004, +.018] & .000 [$-$.002, +.002] & .000 [$-$.001, +.001] \\
+MLP $-$ tuned LR & $-$.010 [$-$.029, +.004] & +.014 [+.007, +.021] & $-$.001 [$-$.009, +.007] & +.013 [+.004, +.024] & +.016 [+.006, +.026] & +.014 [+.008, +.019] \\
+\bottomrule
+\end{tabular}}
+\caption{Paired bootstrap differences in test AUROC at the cross-validation-selected layers (same test rows, 2,000 resamples of question groups, 95\% intervals).}
+\label{tab:paired}
+\end{table*}
+
+\paragraph{Reproduction check.} On the all-10 setting, hop-1 results on identical rows differ from the earlier probing run by at most 0.002 AUROC. Hop-2 and pooled AUROC are 0.003 and 0.002 lower than before at every layer, because hops the model never generated (67 rows, 11 in the test split), previously scored on a zero vector, are now dropped.
+
+\section{Further Results}
+\label{app:hotpot}
+
+\paragraph{HotpotQA hop labels.} For bridge questions, hop 1 must name the bridge entity (the supporting paragraph whose title is not in the question; 234 of 404 questions are unambiguous) and hop 2 must contain the answer, checked with the same matcher as the 2Wiki labels. On 2Wiki both rules agree with the LLM-checked labels on 97.3\% (bridge entity) and 97.0\% (hop labels) of cases, erring towards ``fail''. On HotpotQA bridge questions the probe's hop AUROC is 0.738 / 0.675 (2Wiki 0.947 / 0.925); detection misses cost the probe 13.2\% of questions and the judge 31.6\%, and retrieval misses only 4.7\%.
+
+\paragraph{Calibration.} Expected calibration error on live 2Wiki hops: probe 0.024 (old probe 0.033), judges 0.221 (Llama-3.2-3B), 0.264 (Llama-3.1-8B), 0.482 (Qwen2.5-3B), 0.241 (Qwen2.5-7B); Brier score 0.080 against 0.249--0.487.
+
+\paragraph{Answer selection.} Choosing among the original answer and the hop-1 and hop-2 restarts by the lowest failure score gives 0.550 with the probe, 0.506 with the judge and 0.462 at random on 2Wiki (oracle choice 0.626).
+
+\paragraph{Case study.} \emph{``When was the performer of song Doesn't Really Matter born?''} (gold: May 16, 1966). Hop 1, ``the performer is Janet Jackson'', is correct (probe 0.04, judge 0.00). Hop 2, ``Janet Jackson is an American singer'', is fluent and confident but answers a different question: the probe flags it (0.90), the judge does not (0.07), and the first answer is ``American''. The probe halts at hop 2, retrieval brings the \emph{Janet Jackson} page, and the restart answers ``May 16, 1966''. Of the 2Wiki questions, 21 follow this pattern (probe flags, judge does not, the restart fixes the answer); conversely, 10 restarts break a correct answer, typically when the model had recovered from a failing hop on its own and the restart retrieved the wrong page.
+
+\section{Reproducibility}
+
+Code, notebooks and result files are in the project repository (branch \texttt{main}; the probe-suite comparison of Section~\ref{sec:design} on branch \texttt{experiment/distractor-rag}); hidden states, datasets and the trained probes are on the Hugging Face dataset \texttt{AnishRacherla/LinguaFranca-Phase3} (folders \texttt{probes\_deployed\_tfidf\_v2} and \texttt{probe\_suite\_v1}). Generation uses greedy decoding with fp16 weights; probes use scikit-learn \citep{pedregosa2011scikit} with fixed seeds. The pipeline runs on a single Kaggle T4 GPU in roughly four hours for the 1,000 evaluation questions; the diagnoser is fine-tuned on the same GPU; probe training and the cached-generation evaluations run on CPU.
+
+\end{document}
