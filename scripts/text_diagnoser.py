@@ -77,7 +77,9 @@ class Diagnoser:
         self.torch = torch
         self.dev = "cuda" if torch.cuda.is_available() else "cpu"
         self.tok = AutoTokenizer.from_pretrained(name)
-        self.model = AutoModelForSequenceClassification.from_pretrained(name, num_labels=1).to(self.dev)
+        # fp32 master weights: recent transformers load the checkpoint's own dtype (fp16 for deberta-v3), and
+        # mixed-precision training (autocast + GradScaler) needs fp32 parameters
+        self.model = AutoModelForSequenceClassification.from_pretrained(name, num_labels=1).float().to(self.dev)
 
     def encode(self, pairs):
         # longest_first trims the longer side (the context) and never fails if A alone is long
@@ -104,7 +106,7 @@ class Diagnoser:
         opt = torch.optim.AdamW(self.model.parameters(), lr=LR, weight_decay=0.01)
         steps = EPOCHS * int(np.ceil(len(tr_pairs) / (BATCH * ACCUM)))
         sched = get_linear_schedule_with_warmup(opt, int(WARMUP * steps), steps)
-        scaler = torch.cuda.amp.GradScaler(enabled=self.dev == "cuda")
+        scaler = torch.amp.GradScaler("cuda", enabled=self.dev == "cuda")
         best, best_state, hist = -1.0, None, []
         order = list(range(len(tr_pairs)))
         for ep in range(EPOCHS):
