@@ -1,16 +1,17 @@
 # Phases 3–5 outputs — runs, data and retrieval
 
-Code: `src/pipeline/` · notebook: `kaggle/pipeline_phase3_5.ipynb` · paper text: `tfidf/results_section_draft.md`.
+Code: `src/pipeline/` · notebook: `kaggle/pipeline_phase3_5.ipynb` · all numbers and their interpretation: `imppoints.md` §8 · `tfidf/results_section_draft.md` is the paper text for the earlier run (old probe; numbers superseded by §8).
 
 ## Runs (all: setting `tfidf`, 500 held-out 2Wiki + 500 HotpotQA questions, Llama-3.2-3B-Instruct, Kaggle T4)
 
 | folder | probe trigger | repair | max restarts | status |
 |---|---|---|---|---|
-| `tfidf_v2_r2_shared/` | **one shared probe for both hops (main)** | **v2** | **2** | **final: main results** |
+| `tfidf_final_lrC0.01_L12/` | **tuned shared probe** (`tfidf/probes_lr_C0.01_L12`: LR C = 0.01, block 12, τ = 0.650) + answer forcing | **v2** | **2** | **final: main results**; extra analyses in its subfolders (`robustness/`, `selective/`, `error_budget/`, `hotpot_hops/`, `uncertainty_early/`) and `trigger_baselines.md`, `verifier_selection.md`, `full_stats.md` |
+| `tfidf_v2_r2_shared/` | one shared probe for both hops (old: C = 1, block 10) | v2 | 2 | earlier main run (no answer forcing — do not compare accuracies across runs) |
 | `tfidf_v2_r2/` | dedicated probes, re-evaluated with the shared probe as main (`results.md`; the original report is `results_dedicated_main.md`) | v2 | 2 (dedicated) | figure `sweep.png`, `tables.tex`, `results.json` for the 1-restart rows |
 | `tfidf/` | dedicated probes (shared = ablation row) | v1 (proposal's Naive Restart) | 1 | first run; probes in `tfidf/probes/` |
 
-The trajectories, judge scores and first-round restarts are identical across the v2 runs (re-used with `--reuse-from`). Only the probe trigger and the second round differ. The raw outputs (`s0.jsonl`, `s0_feats/`, restarts, …, ~300 MB per run) are not in git.
+The trajectories, judge scores and first-round restarts are identical across the v2 runs (re-used with `--reuse-from`). Only the probe trigger, the second round and (final run) answer forcing differ. The raw outputs (`s0.jsonl`, `s0_feats/`, restarts, …, ~300 MB per run) are not in git.
 
 ## Where the evidence comes from
 

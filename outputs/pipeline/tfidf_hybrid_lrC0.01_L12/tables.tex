@@ -1,0 +1,64 @@
+% end-to-end, 2wiki (tfidf)
+\begin{tabular}{lrrrrr}
+\toprule
+System & Acc & EM & F1 & Restart rate & Gen.\ tokens \\
+\midrule
+No intervention & 0.342 & 0.258 & 0.319 & 0.00 & 143.4 \\
+Probe trigger (ours) & 0.558 & 0.424 & 0.518 & 0.64 & 160.2 \\
+Judge trigger (Doctor-RAG-style) & 0.452 & 0.330 & 0.415 & 0.46 & 213.7 \\
+Always retrieve & 0.384 & 0.276 & 0.348 & 1.00 & 152.6 \\
+Oracle trigger & 0.566 & 0.426 & 0.525 & 0.69 & 155.0 \\
+Probe trigger, accuracy-optimal τ (2-fold CV) & 0.582 & 0.426 & 0.531 & 0.87 & 173.1 \\
+Probe trigger, up to 2 restarts & 0.604 & 0.460 & 0.565 & 0.64 & 172.8 \\
+Judge trigger, up to 2 restarts & 0.470 & 0.338 & 0.430 & 0.46 & 246.7 \\
+Probe trigger, dedicated hop-1 / hop-2 probes (ablation) & 0.554 & 0.412 & 0.510 & 0.63 & 156.6 \\
+Judge trigger (Qwen2.5-3B-Instruct) & 0.446 & 0.324 & 0.411 & 0.89 & 262.2 \\
+Judge trigger (Qwen2.5-7B-Instruct) & 0.510 & 0.384 & 0.469 & 0.63 & 227.3 \\
+Judge trigger (Llama-3.1-8B-Instruct) & 0.402 & 0.306 & 0.374 & 0.27 & 181.2 \\
+\bottomrule
+\end{tabular}
+
+% end-to-end, hotpotqa (tfidf)
+\begin{tabular}{lrrrrr}
+\toprule
+System & Acc & EM & F1 & Restart rate & Gen.\ tokens \\
+\midrule
+No intervention & 0.504 & 0.362 & 0.487 & 0.00 & 134.3 \\
+Probe trigger (ours) & 0.550 & 0.382 & 0.526 & 0.59 & 155.5 \\
+Judge trigger (Doctor-RAG-style) & 0.536 & 0.370 & 0.508 & 0.23 & 160.6 \\
+Always retrieve & 0.554 & 0.396 & 0.535 & 1.00 & 133.3 \\
+Probe trigger, accuracy-optimal τ (2-fold CV) & 0.566 & 0.384 & 0.536 & 0.81 & 174.6 \\
+Probe trigger, up to 2 restarts & 0.552 & 0.386 & 0.533 & 0.59 & 176.5 \\
+Judge trigger, up to 2 restarts & 0.534 & 0.374 & 0.508 & 0.23 & 170.2 \\
+Probe trigger, dedicated hop-1 / hop-2 probes (ablation) & 0.560 & 0.386 & 0.534 & 0.61 & 154.3 \\
+Judge trigger (Qwen2.5-3B-Instruct) & 0.556 & 0.372 & 0.526 & 0.75 & 235.3 \\
+Judge trigger (Qwen2.5-7B-Instruct) & 0.546 & 0.374 & 0.513 & 0.49 & 195.4 \\
+Judge trigger (Llama-3.1-8B-Instruct) & 0.528 & 0.368 & 0.503 & 0.16 & 153.1 \\
+\bottomrule
+\end{tabular}
+
+% detection, 2Wiki (tfidf)
+\begin{tabular}{llrrrrr}
+\toprule
+Rows & Trigger & AUROC & P & R & F$_{0.5}$ & FPR \\
+\midrule
+hop1 & probe & 0.947 & 0.836 & 0.600 & 0.775 & 0.024 \\
+hop1 & probe dedicated & 0.949 & 0.797 & 0.694 & 0.774 & 0.036 \\
+hop1 & judge (Qwen2.5-3B-Instruct) & 0.558 & 0.180 & 0.788 & 0.213 & 0.737 \\
+hop1 & judge (Qwen2.5-7B-Instruct) & 0.779 & 0.426 & 0.541 & 0.445 & 0.150 \\
+hop1 & judge (Llama-3.1-8B-Instruct) & 0.597 & 0.262 & 0.200 & 0.246 & 0.116 \\
+hop1 & judge & 0.569 & 0.198 & 0.306 & 0.213 & 0.254 \\
+hop2 & probe & 0.925 & 0.911 & 0.847 & 0.898 & 0.164 \\
+hop2 & probe dedicated & 0.922 & 0.915 & 0.823 & 0.895 & 0.152 \\
+hop2 & judge (Qwen2.5-3B-Instruct) & 0.562 & 0.680 & 0.807 & 0.703 & 0.752 \\
+hop2 & judge (Qwen2.5-7B-Instruct) & 0.690 & 0.786 & 0.676 & 0.762 & 0.364 \\
+hop2 & judge (Llama-3.1-8B-Instruct) & 0.729 & 0.818 & 0.220 & 0.530 & 0.097 \\
+hop2 & judge & 0.678 & 0.796 & 0.382 & 0.654 & 0.194 \\
+trajectory & probe & – & 0.909 & 0.829 & 0.892 & 0.195 \\
+trajectory & probe dedicated & – & 0.921 & 0.832 & 0.902 & 0.168 \\
+trajectory & judge (Qwen2.5-3B-Instruct) & – & 0.704 & 0.889 & 0.735 & 0.879 \\
+trajectory & judge (Qwen2.5-7B-Instruct) & – & 0.777 & 0.695 & 0.759 & 0.470 \\
+trajectory & judge (Llama-3.1-8B-Instruct) & – & 0.812 & 0.308 & 0.612 & 0.168 \\
+trajectory & judge & – & 0.795 & 0.519 & 0.718 & 0.315 \\
+\bottomrule
+\end{tabular}
