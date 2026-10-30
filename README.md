@@ -11,7 +11,7 @@ A small LLM answering a two-step question often gets the first step wrong and th
 
 We test whether a **lightweight probe on the model's hidden states** can detect a failing reasoning step **the moment that step ends**, before the rest of the answer is generated. We also test whether that signal is **causally** tied to the failure (activation patching), and whether using it to **trigger retrieval and restart** beats a text-based judge in accuracy, cost and latency.
 
-> **Start here:** this README explains the whole pipeline. Numbers: `imppoints.md` (all phases, final; §0 maps every notebook, script and output) and `outputs/pipeline/tfidf_final_lrC0.01_L12/results.md` (final Phase 3–5 run, tuned probe). The older draft `outputs/pipeline/tfidf/results_section_draft.md` uses the earlier run's numbers. What was fixed in Oct 2026: `FIXES_AND_RERUN.md`.
+> **Start here:** this README explains the whole pipeline. Paper source document: `PAPER_REPORT.md` (everything the final paper should contain, organised as the paper). Numbers: `imppoints.md` (all phases, final; §0 maps every notebook, script and output) and `outputs/pipeline/tfidf_final_lrC0.01_L12/results.md` (final Phase 3–5 run, tuned probe). The older draft `outputs/pipeline/tfidf/results_section_draft.md` uses the earlier run's numbers. What was fixed in Oct 2026: `FIXES_AND_RERUN.md`.
 
 ### Phases (repo numbering)
 | Phase | Description | Code | Kaggle notebook |

@@ -15,6 +15,8 @@
 | full10 | all 10 2Wiki paragraphs (2 gold + 8 distractors) | §1–§6, §7b (earlier study, mid-term report) | superseded for the paper's main results, still valid as stated |
 | **TF-IDF top-5** | TF-IDF keeps 5 of the 10 paragraphs, so a gold paragraph is often missing | §1b, §2b, §7, §8 | **final** |
 
+**For writing the paper use `PAPER_REPORT.md`** (the same results organised as the paper: abstract draft, method, every result table, claims / non-claims, limitations, figures). This file is the detailed lab notebook behind it.
+
 **Section map.** §1/§1b data · §2/§2b probes · §3 hedging vs confident failures · §4 qualitative errors · §5 hop → final answer · §6 LLM-judge baseline (full10) · §7 causal patching (TF-IDF, final) · §7b causal patching (full10, superseded) · **§8 Phases 3–5, final run, all extra analyses** · §8b earlier Phases 3–5 run · §9 positioning vs Doctor-RAG · §10 report checklist · §11 figures for the paper · §12 limitations and future work.
 
 **Where everything is** (all paths relative to the repo root).
@@ -344,7 +346,7 @@ Numbers: `outputs/pipeline/tfidf_v2_r2_shared/results.md`; paper-ready text: `ou
 ## 9. Positioning vs Doctor-RAG
 Doctor-RAG reports 81.3 % diagnosis accuracy with a distilled, fine-tuned diagnoser on its own benchmark; that figure is not directly comparable to ours (different data, labels and granularity). The defensible claims are the matched comparisons:
 1. On identical rows, hidden-state probes detect hop failures far better than off-the-shelf text judges up to 8B (§6: AUROC 0.96 vs ≤ 0.72), and **as well as a text diagnoser fine-tuned on the same labels** — the Doctor-RAG recipe — (§8 G: 0.954 vs 0.959, n.s.; same end-to-end accuracy), while costing one dot product on states the generator already computed instead of a separate 184M-parameter pass (37.8 ms) per check.
-2. Used as a live repair trigger with the same retrieval and restart, a single probe is significantly more accurate than the post-hoc judge at its own decision rule and at every matched restart budget in domain, at least as accurate out of domain, and reaches the accuracy of always-restarting with 34 % fewer restarts, while detecting failures ~3× earlier at ~40 % lower token cost (§8). With accuracy-tuned thresholds the judges match that accuracy only by restarting almost everything (§8 A1).
+2. Used as a live repair trigger with the same retrieval and restart, a single probe is significantly more accurate than the post-hoc judge at its own decision rule and at matched restart budgets of 40–70 % in domain (small and mostly n.s. at 10–30 %), at least as accurate out of domain, and reaches the accuracy of always-restarting with 34 % fewer restarts, while detecting failures ~3× earlier at ~40 % lower token cost (§8). With accuracy-tuned thresholds the judges match that accuracy only by restarting almost everything (§8 A1).
 3. The probe sees failures the model's own token probabilities do not (AUROC 0.95 vs ≤ 0.68 for FLARE/DRAGIN-style signals; §8 B), so it is also a better trigger than confidence-based active RAG.
 4. The probe reads grounding, not wording, and follows causal interventions pair by pair (§7 D); the state predicts the failure before the hop's words differ (§8 B, AUROC 0.83 after ~3 identical tokens).
 
