@@ -20,12 +20,13 @@ from __future__ import annotations
 
 import argparse
 import json
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import numpy as np
 
-from src.pipeline.common import answer_correct, detection_metrics, read_jsonl
+from src.pipeline.common import (answer_correct, detection_metrics, hop_order_condition, load_setting_examples,
+                                 read_jsonl)
 from src.pipeline.systems import judge_trigger, outcome, probe_trigger
 
 SYSTEMS = ["no_intervention", "probe_restart", "judge_restart", "always_retrieve", "oracle_restart"]
@@ -106,13 +107,23 @@ def _relabel(items: list[dict], s0: dict) -> None:
         it["label_source"] = "relabeled"
 
 
-def evaluate(out, probe_dir=None, probe_mode: str = "shared") -> dict:
+def evaluate(out, probe_dir=None, probe_mode: str = "shared", probe_changed: bool = False) -> dict:
+    """
+    probe_changed=True: the probe bundle differs from the one the run used.  One-restart probe systems are
+    re-scored exactly from the saved live features, but the second-round probe decisions (scored during the
+    run) and the live-subset equivalence check belong to the old probe, so they are left out.
+    """
     out = Path(out)
     probe_dir = Path(probe_dir) if probe_dir else out / "probes"
     meta = json.loads((probe_dir / "probes_meta.json").read_text())
     items_all = read_jsonl(out / "eval_set.jsonl")
     s0 = {r["uid"]: r for r in _merged(out, "s0")}
     judge = {r["uid"]: r for r in _merged(out, "judge")}
+    # the same post-hoc judge run with other models (stage `judges`): model short name -> uid -> record
+    extra_judges: dict = {}
+    for f in sorted(out.glob("judge__*.jsonl")):
+        for r in read_jsonl(f):
+            extra_judges.setdefault(r["model"].split("/")[-1], {})[r["uid"]] = r
     rs = defaultdict(dict)
     for r in _merged(out, "restarts") + _merged(out, "restarts2"):
         rs[r["uid"]][r["key"]] = r
@@ -121,12 +132,35 @@ def evaluate(out, probe_dir=None, probe_mode: str = "shared") -> dict:
             rs[sc["uid"]][sc["key"]]["rescore"] = sc
     has_round2 = any(">" in k for v in rs.values() for k in v)
     live = {r["uid"]: r for r in _merged(out, "live")}
+    # answers forced from hops 1-2 for generations that hit the token cap without <answer> (stage `force`)
+    n_forced = Counter()
+    for f in _merged(out, "forced"):
+        rec = s0.get(f["uid"]) if f["key"] == "s0" else rs[f["uid"]].get(f["key"])
+        if rec is not None and not rec["answer"]:
+            rec["answer"], rec["answer_forced"] = f["answer"], True
+            rec["n_gen"] += f["n_gen"]
+            n_forced["first answers" if f["key"] == "s0" else "restarts"] += 1
 
     items = [it for it in items_all if it["uid"] in s0 and "q" in rs[it["uid"]]
              and all(f"h{k}" in rs[it["uid"]] for k in ("1", "2")
                      if k in s0[it["uid"]]["boundaries"] and s0[it["uid"]]["hop_text"][k])]
     print(f"[evaluate] {len(items)}/{len(items_all)} items have all outputs")
     _relabel(items, s0)
+    # The stored TF-IDF retrieval conditions are in alphabetical title order (generated before the hop-order
+    # fix), so only_p1 / only_p2 are not hop 1 / hop 2.  Recompute them in true hop order for 2Wiki items.
+    meta_setting = json.loads((Path(probe_dir) / "probes_meta.json").read_text())["setting"]
+    try:
+        by_id = {e["id"]: e for e in load_setting_examples(meta_setting)}
+    except Exception as e:                                         # noqa: BLE001
+        by_id = {}
+        print(f"[evaluate] cannot load the dataset to recompute hop-order conditions ({e.__class__.__name__})")
+    n_cond = 0
+    for it in items:
+        e = by_id.get(it.get("id"))
+        if it["dataset"] == "2wiki" and e is not None and e.get("gold_titles"):
+            it["retrieval_condition"] = hop_order_condition(e, it["context_titles"])
+            n_cond += 1
+    print(f"[evaluate] retrieval conditions recomputed in hop order for {n_cond} 2Wiki items")
 
     # Probe scores are recomputed from the saved live features with THIS probe bundle, so a run made with
     # an older (e.g. uncalibrated) bundle or the other probe mode is evaluated on the same scale as `tau`.
@@ -152,7 +186,8 @@ def evaluate(out, probe_dir=None, probe_mode: str = "shared") -> dict:
     run_args = json.loads((out / "run_args.json").read_text()) if (out / "run_args.json").exists() else {}
     run_mode = run_args.get("probe_mode", "dedicated")       # runs before the switch used dedicated probes
 
-    R: dict = dict(setting=meta["setting"], probe_mode=probe_mode, n_items=len(items), probe_layers=layers, tau=tau)
+    R: dict = dict(setting=meta["setting"], probe_mode=probe_mode, n_items=len(items), probe_layers=layers, tau=tau,
+                   forced_answers=dict(n_forced))
 
     # ── RQ1: detection on 2Wiki ──────────────────────────────────────────────
     wiki = [it for it in items if it["dataset"] == "2wiki"]
@@ -168,6 +203,12 @@ def evaluate(out, probe_dir=None, probe_mode: str = "shared") -> dict:
         pa = np.array([alt_scores[it["uid"]][k] for it, _, _ in rows])
         det[f"hop{k}"] = {"probe": detection_metrics(y, pp >= tau[k], pp), "judge": detection_metrics(y, pj >= 0.5, pj),
                           f"probe_{alt_mode}": detection_metrics(y, pa >= tau_alt[k], pa)}
+        for jn, jrecs in extra_judges.items():
+            jr = [(it["labels"][str(k)], jrecs[it["uid"]][str(k)]["p_fail"]) for it, _, _ in rows
+                  if str(k) in jrecs.get(it["uid"], {})]
+            if jr:
+                yx, px = [a for a, _ in jr], np.array([b for _, b in jr])
+                det[f"hop{k}"][f"judge ({jn})"] = detection_metrics(yx, px >= 0.5, px)
     traj_rows = [it for it in wiki if it["label_source"] != "unavailable"]
     if traj_rows:
         y = [int(it["first_fail"] in (1, 2)) for it in traj_rows]
@@ -178,7 +219,11 @@ def evaluate(out, probe_dir=None, probe_mode: str = "shared") -> dict:
                 "judge": detection_metrics(y, [k is not None for k in kj]),
                 f"probe_{alt_mode}": detection_metrics(y, [k is not None for k in ka])}
         fail = [i for i, v in enumerate(y) if v]
-        for name, ks in (("probe", kp), ("judge", kj), (f"probe_{alt_mode}", ka)):
+        extra_k = {}
+        for jn, jrecs in extra_judges.items():
+            extra_k[f"judge ({jn})"] = [judge_trigger(jrecs.get(it["uid"])) for it in traj_rows]
+            traj[f"judge ({jn})"] = detection_metrics(y, [k is not None for k in extra_k[f"judge ({jn})"]])
+        for name, ks in (("probe", kp), ("judge", kj), (f"probe_{alt_mode}", ka), *extra_k.items()):
             traj[name]["localization_acc_on_failures"] = (
                 float(np.mean([ks[i] == traj_rows[i]["first_fail"] for i in fail])) if fail else float("nan"))
             traj[name]["exact_first_fail_acc_all"] = float(np.mean(
@@ -227,18 +272,26 @@ def evaluate(out, probe_dir=None, probe_mode: str = "shared") -> dict:
         if acc_tau:
             row["probe_restart_acc"] = outcome("probe_restart", it, s0[it["uid"]], rs[it["uid"]],
                                                **dict(kw, tau=acc_tau[it["uid"]]))
+        for jn, jrecs in extra_judges.items():
+            row[f"judge_restart__{jn}"] = outcome("judge_restart", it, s0[it["uid"]], rs[it["uid"]],
+                                                  **dict(kw, judge_rec=jrecs.get(it["uid"])))
         alt_kw = dict(kw, probe_scores=alt_scores[it["uid"]], tau=tau_alt)
         row["probe_restart_alt"] = outcome("probe_restart", it, s0[it["uid"]], rs[it["uid"]], **alt_kw)
-        if has_round2:
+        if has_round2 and not probe_changed:
             # second-round probe scores were computed during the run, so the 2-round probe system
             # exists for the run's probe mode only (main row if it matches, ablation row otherwise)
             row[p2_key] = outcome("probe_restart", it, s0[it["uid"]], rs[it["uid"]], rounds=2,
                                   **(kw if run_mode == probe_mode else alt_kw))
+        if has_round2:
             row["judge_restart_2r"] = outcome("judge_restart", it, s0[it["uid"]], rs[it["uid"]], rounds=2, **kw)
         per_item.append(row)
 
-    systems_present = SYSTEMS + (["probe_restart_acc"] if acc_tau else []) + \
-        ([p2_key, "judge_restart_2r"] if has_round2 else []) + ["probe_restart_alt"]
+    systems_present = (SYSTEMS + (["probe_restart_acc"] if acc_tau else [])
+                       + ([p2_key] if has_round2 and not probe_changed else [])
+                       + (["judge_restart_2r"] if has_round2 else []) + ["probe_restart_alt"]
+                       + [f"judge_restart__{jn}" for jn in extra_judges])
+    for jn in extra_judges:
+        LABEL[f"judge_restart__{jn}"] = f"Judge trigger ({jn})"
     e2e = {}
     for ds in ("2wiki", "hotpotqa"):
         rows = [r for r in per_item if r["dataset"] == ds]
@@ -265,13 +318,16 @@ def evaluate(out, probe_dir=None, probe_mode: str = "shared") -> dict:
         pr = np.array([r["probe_restart"]["correct"] for r in rows], float)
         jr = np.array([r["judge_restart"]["correct"] for r in rows], float)
         e2e[ds]["probe_minus_judge_acc_ci95"] = _paired_ci(pr, jr)
+        for jn in extra_judges:
+            jx = np.array([r[f"judge_restart__{jn}"]["correct"] for r in rows], float)
+            e2e[ds][f"probe_minus_judge_{jn}_acc_ci95"] = _paired_ci(pr, jx)
         if has_round2:
-            if p2_key == "probe_restart_2r":
+            if p2_key == "probe_restart_2r" and not probe_changed:
                 pr2 = np.array([r["probe_restart_2r"]["correct"] for r in rows], float)
                 jr2 = np.array([r["judge_restart_2r"]["correct"] for r in rows], float)
                 e2e[ds]["probe2r_minus_judge2r_acc_ci95"] = _paired_ci(pr2, jr2)
             e2e[ds]["second_restart_rate"] = {s: float(np.mean([r[s]["n_restarts"] == 2 for r in rows]))
-                                              for s in (p2_key, "judge_restart_2r")}
+                                              for s in (p2_key, "judge_restart_2r") if s in rows[0]}
         # breakdown by first-stage retrieval condition
         by = defaultdict(list)
         for r in rows:
@@ -320,7 +376,7 @@ def evaluate(out, probe_dir=None, probe_mode: str = "shared") -> dict:
     # ── latency & equivalence (live subset) ──────────────────────────────────
     lat = {}
     it_by = {it["uid"]: it for it in items}
-    lv = [u for u in live if u in it_by]
+    lv = [u for u in live if u in it_by] if not probe_changed else []   # live runs used the old probe
     if lv:
         sims = {u: item_rows[u] for u in lv}
 
@@ -338,6 +394,9 @@ def evaluate(out, probe_dir=None, probe_mode: str = "shared") -> dict:
         pms = [b["probe_ms"] for u in lv for b in s0[u]["boundaries"].values() if b.get("p_fail") is not None]
         lat["probe_ms_per_boundary"] = float(np.mean(pms)) if pms else None
         lat["judge_ms_per_trajectory"] = float(np.mean([judge_ms(u) for u in lv]))
+        lat["extra_judge_ms_per_trajectory"] = {
+            jn: float(np.mean([sum(v["ms"] for v in jrecs.get(u, {}).values() if isinstance(v, dict)) for u in lv]))
+            for jn, jrecs in extra_judges.items()}
         rms = [r["retrieval_ms"] for u in lv for r in rs[u].values()]
         lat["retrieval_ms"] = float(np.mean(rms)) if rms else None
         # the live subset runs the probe system with the run's --rounds; compare with the same simulated system
@@ -404,7 +463,8 @@ def _f(x, nd=3):
 def _markdown(R: dict) -> str:
     L = [f"# Phase 3–5 results — setting `{R['setting']}`", "",
          f"Items evaluated: {R['n_items']}.  Main probe: {MODE_TEXT[R['probe_mode']]}; layers {R['probe_layers']}, thresholds "
-         f"{ {k: round(v, 3) for k, v in R['tau'].items()} } (F0.5-optimal on train-split CV).", ""]
+         f"{ {k: round(v, 3) for k, v in R['tau'].items()} } (F0.5-optimal on train-split CV).",
+         f"Answers forced from hops 1-2 after hitting the token cap without <answer>: {R.get('forced_answers') or 'none'}.", ""]
     det = R.get("detection_2wiki", {})
     if det:
         L += ["## RQ1 — failure detection (2Wiki held-out test, live trajectories)", "",
@@ -438,6 +498,11 @@ def _markdown(R: dict) -> str:
         ci = e.get("probe_minus_judge_acc_ci95")
         if ci:
             L += ["", f"Probe − judge accuracy, paired bootstrap 95% CI: [{ci[0]:+.3f}, {ci[1]:+.3f}]"]
+        for key, ci_x in e.items():
+            if key.startswith("probe_minus_judge_") and key.endswith("_acc_ci95") and ci_x:
+                jn = key[len("probe_minus_judge_"):-len("_acc_ci95")]
+                if jn:                                   # the 3B judge's CI is printed above
+                    L += [f"Probe − judge ({jn}) accuracy, paired bootstrap 95% CI: [{ci_x[0]:+.3f}, {ci_x[1]:+.3f}]"]
         ci2 = e.get("probe2r_minus_judge2r_acc_ci95")
         if ci2:
             L += [f"Probe − judge accuracy, both with up to 2 restarts: [{ci2[0]:+.3f}, {ci2[1]:+.3f}]; "
@@ -466,6 +531,9 @@ def _markdown(R: dict) -> str:
         for s, m in lat["wall_ms"].items():
             name = LABEL[lat.get("live_probe_system", s)] if s == "probe_restart" else LABEL[s]
             L.append(f"| {name} | {m['mean']:.0f} | {m['median']:.0f} |")
+        if lat.get("extra_judge_ms_per_trajectory"):
+            L += ["", "Other judges, cost per trajectory: " +
+                  ", ".join(f"{k} {v:.0f} ms" for k, v in lat["extra_judge_ms_per_trajectory"].items())]
         L += ["", f"Probe cost per hop boundary: {_f(lat['probe_ms_per_boundary'], 2)} ms; judge cost per trajectory: "
                   f"{_f(lat['judge_ms_per_trajectory'], 1)} ms; retrieval: {_f(lat['retrieval_ms'], 1)} ms.",
               f"Simulated-vs-live equivalence: {lat['equivalence']}", ""]
@@ -544,8 +612,10 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--probe-dir", default=None)
     ap.add_argument("--probe-mode", default="shared", choices=["shared", "dedicated"])
+    ap.add_argument("--probe-changed", action="store_true",
+                    help="the probe differs from the run's: report only the one-restart probe systems")
     args = ap.parse_args()
-    evaluate(args.out, args.probe_dir, args.probe_mode)
+    evaluate(args.out, args.probe_dir, args.probe_mode, args.probe_changed)
 
 
 if __name__ == "__main__":

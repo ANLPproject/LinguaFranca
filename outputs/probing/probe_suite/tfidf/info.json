@@ -1,0 +1,41 @@
+{
+ "setting": "tfidf",
+ "legacy_rows": false,
+ "n_examples": 4000,
+ "n_train_examples": 3200,
+ "n_test_examples": 800,
+ "rows_labelled": 8000,
+ "rows_used": 7911,
+ "dropped": {
+  "no_span": 85,
+  "no_column": 4
+ },
+ "d": 3072,
+ "n_layers": 28,
+ "tasks": {
+  "hop1": {
+   "n_train": 3200,
+   "n_test": 798,
+   "fail_train": 641,
+   "fail_test": 139,
+   "cf_test": 0,
+   "hedge_fail_test": 23
+  },
+  "hop2": {
+   "n_train": 3125,
+   "n_test": 788,
+   "fail_train": 2021,
+   "fail_test": 512,
+   "cf_test": 0,
+   "hedge_fail_test": 47
+  },
+  "hop12": {
+   "n_train": 6325,
+   "n_test": 1586,
+   "fail_train": 2662,
+   "fail_test": 651,
+   "cf_test": 0,
+   "hedge_fail_test": 70
+  }
+ }
+}

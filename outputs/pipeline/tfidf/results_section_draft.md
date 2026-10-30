@@ -64,11 +64,12 @@ On 2Wiki, probe-triggered repair raises accuracy by **+16.2 points** with one re
 | First-stage condition | n | No intervention | Judge | Probe | Probe, ≤ 2 restarts | Oracle |
 |---|---|---|---|---|---|---|
 | Both gold paragraphs retrieved | 203 | 0.670 | 0.680 | 0.690 | 0.719 | 0.714 |
-| Only the hop-1 paragraph | 123 | 0.146 | 0.301 | **0.415** | **0.488** | 0.463 |
-| Only the hop-2 paragraph | 165 | 0.079 | 0.273 | **0.345** | **0.394** | 0.412 |
+| Hop-2 paragraph missing | 282 | 0.106 | 0.287 | **0.376** | – | 0.433 |
+| Hop-1 paragraph missing | 6 | 0.167 | 0.167 | 0.333 | – | 0.500 |
+| One gold paragraph missing (the two rows above) | 288 | 0.108 | 0.285 | **0.375** | **0.434** | 0.434 |
 | Neither | 9 | 0.000 | 0.000 | 0.000 | 0.556 | 0.000 |
 
-With the evidence present all systems are similar. When a gold paragraph is missing, probe-triggered repair multiplies accuracy by 2.8–4.4× (one restart). A second restart is the only system that recovers questions with both paragraphs missing (5 of 9). HotpotQA shows the same pattern (one gold paragraph present: 0.255 → 0.387).
+Conditions are in true hop order. The TF-IDF first stage almost always keeps the hop-1 paragraph, whose entity the question names, and drops the hop-2 paragraph about the bridge entity. With the evidence present all systems are similar. When the hop-2 paragraph is missing, probe-triggered repair multiplies accuracy by 3.5× (0.106 → 0.376, one restart). This also explains why restarts at hop 2 fix far more answers (84 of 221) than restarts at hop 1 (8 of 79): hop-1 failures are misreadings of evidence that is present, not missing evidence. A second restart is the only system that recovers questions with both paragraphs missing (5 of 9). HotpotQA shows the same pattern (one gold paragraph present: 0.255 → 0.387).
 
 **Table 3.** Cost per question (means, one restart unless noted). *Detect tokens* = tokens generated before a failure is flagged (triggered questions); *processed* = prefill + generated tokens incl. judge prompts and restarts.
 

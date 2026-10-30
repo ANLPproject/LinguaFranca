@@ -10,6 +10,7 @@
   "1": 0.6389811437261312,
   "2": 0.6389811437261312
  },
+ "forced_answers": {},
  "detection_2wiki": {
   "hop1": {
    "probe": {
@@ -313,29 +314,29 @@
      "probe_restart_alt": 0.0,
      "n": 9
     },
-    "only_p1": {
-     "no_intervention": 0.14634146341463414,
-     "probe_restart": 0.4146341463414634,
-     "judge_restart": 0.3008130081300813,
-     "always_retrieve": 0.18699186991869918,
-     "oracle_restart": 0.4634146341463415,
-     "probe_restart_acc": 0.4715447154471545,
-     "probe_restart_2r_alt": 0.4878048780487805,
-     "judge_restart_2r": 0.3089430894308943,
-     "probe_restart_alt": 0.43902439024390244,
-     "n": 123
+    "only_hop1_paragraph": {
+     "no_intervention": 0.10638297872340426,
+     "probe_restart": 0.375886524822695,
+     "judge_restart": 0.2872340425531915,
+     "always_retrieve": 0.1347517730496454,
+     "oracle_restart": 0.4326241134751773,
+     "probe_restart_acc": 0.4326241134751773,
+     "probe_restart_2r_alt": 0.45390070921985815,
+     "judge_restart_2r": 0.3049645390070922,
+     "probe_restart_alt": 0.39361702127659576,
+     "n": 282
     },
-    "only_p2": {
-     "no_intervention": 0.07878787878787878,
-     "probe_restart": 0.34545454545454546,
-     "judge_restart": 0.2727272727272727,
-     "always_retrieve": 0.12121212121212122,
-     "oracle_restart": 0.4121212121212121,
-     "probe_restart_acc": 0.4,
-     "probe_restart_2r_alt": 0.42424242424242425,
-     "judge_restart_2r": 0.296969696969697,
-     "probe_restart_alt": 0.3575757575757576,
-     "n": 165
+    "only_hop2_paragraph": {
+     "no_intervention": 0.16666666666666666,
+     "probe_restart": 0.3333333333333333,
+     "judge_restart": 0.16666666666666666,
+     "always_retrieve": 0.8333333333333334,
+     "oracle_restart": 0.5,
+     "probe_restart_acc": 0.3333333333333333,
+     "probe_restart_2r_alt": 0.3333333333333333,
+     "judge_restart_2r": 0.16666666666666666,
+     "probe_restart_alt": 0.3333333333333333,
+     "n": 6
     }
    }
   },
@@ -552,6 +553,7 @@
   "n": 100,
   "probe_ms_per_boundary": 9.449026382655484,
   "judge_ms_per_trajectory": 737.5163182800679,
+  "extra_judge_ms_per_trajectory": {},
   "retrieval_ms": 93.09015997386952,
   "live_probe_system": "probe_restart_2r_alt",
   "equivalence": {

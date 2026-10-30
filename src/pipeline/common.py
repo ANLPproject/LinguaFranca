@@ -27,6 +27,11 @@ import numpy as np
 HF_REPO = "AnishRacherla/LinguaFranca-Phase3"
 MODEL_NAME = "meta-llama/Llama-3.2-3B-Instruct"
 MODEL_MIRRORS = ["unsloth/Llama-3.2-3B-Instruct"]      # same weights, ungated
+# Ungated mirrors (same weights) for every gated model the pipeline may load
+MIRRORS = {MODEL_NAME: MODEL_MIRRORS,
+           "meta-llama/Llama-3.1-8B-Instruct": ["unsloth/Llama-3.1-8B-Instruct", "unsloth/Meta-Llama-3.1-8B-Instruct"]}
+# The off-the-shelf judges of the standalone judge baseline (outputs/llm_judge), rerun inside the pipeline
+EXTRA_JUDGES = ["Qwen/Qwen2.5-3B-Instruct", "Qwen/Qwen2.5-7B-Instruct", "meta-llama/Llama-3.1-8B-Instruct"]
 GOLD_HOPS = (1, 2)
 SPLIT_SEED = 42
 
@@ -41,7 +46,8 @@ SETTINGS = {
     "tfidf": dict(
         data_file="tfidf_distractor_rag/data/raw/2wikimultihopqa/augmented.jsonl",
         hs_prefix="tfidf_distractor_rag/data/hidden_states",
-        revision=None,
+        # Pinned to the 2026-10-21 upload the probes were trained on (later commits only add files).
+        revision="7ad8d6ebbb626db610194c280cfdf097f587b6e0",
         context_top_k=5,
     ),
     # Original Phase 1 setting: all 10 passages (2 gold + 8 distractors), pinned
@@ -53,6 +59,15 @@ SETTINGS = {
         context_top_k=10,
     ),
 }
+
+# TF-IDF counterfactuals (generate_counterfactuals_tfidf.py, kaggle/04), pinned to their upload commit.
+# Used by causal_patching.py and as an evaluation stratum; never for probe training.
+CF_V1 = dict(
+    file="tfidf_distractor_rag/cf_v1/counterfactuals.jsonl",
+    aliases="tfidf_distractor_rag/cf_v1/aliases.json",
+    hs_prefix="tfidf_distractor_rag/cf_v1/hidden_states",
+    revision="128611a10fa414db77e2e7bcab5f9fde1c734eae",
+)
 
 HEDGE_KEYWORDS = ["no information", "no mention", "not mentioned", "no relevant information",
                   "not found", "cannot find", "does not mention"]
@@ -221,6 +236,42 @@ def repair_query(question: str, hops: dict, k: int, repair: str = "v2") -> str:
         lead = bridge_entity(hops.get("1", "")) or (hops.get("1") or "").strip()
         return " ".join(x for x in (f"{lead}." if lead else "", question, h) if x)
     return f"{question} {h}".strip()
+
+
+def gold_titles_in_hop_order(example: dict):
+    """
+    (hop-1 title, hop-2 title) of a 2Wiki example, or None if it cannot be resolved.
+
+    The stored `gold_titles` / `retrieval_condition` of the TF-IDF data were generated before the
+    hop-order fix (commit 687b983) and are in ALPHABETICAL order, so `only_p1` / `only_p2` do not
+    mean hop 1 / hop 2.  Here the hop-2 paragraph is the one about the bridge entity (the gold
+    entity of hop 1, e.g. "Wallace Fox"); the hop-1 paragraph is the other one (e.g. "The Great Mike").
+    Fallback: the hop-1 paragraph is the gold title that appears in the question.
+    """
+    g = list(dict.fromkeys(example.get("gold_titles") or []))
+    graph = example.get("reasoning_graph") or []
+    if len(g) != 2 or not graph:
+        return None
+    base = lambda t: normalize_answer(re.sub(r"\s*\(.*?\)\s*", " ", t))  # noqa: E731  "X (director)" -> "x"
+    bridge = normalize_answer(graph[0].get("gold_entity", ""))
+    hit = [t for t in g if base(t) and bridge and (base(t) == bridge or base(t) in bridge or bridge in base(t))]
+    if len(hit) == 1:
+        return (g[1] if hit[0] == g[0] else g[0]), hit[0]
+    q = normalize_answer(example.get("question", ""))
+    in_q = [t for t in g if base(t) and base(t) in q]
+    if len(in_q) == 1:
+        return in_q[0], (g[1] if in_q[0] == g[0] else g[0])
+    return None
+
+
+def hop_order_condition(example: dict, titles_in_prompt) -> str:
+    """First-stage retrieval condition in true hop order."""
+    order = gold_titles_in_hop_order(example)
+    if order is None:
+        return "unresolved"
+    present = set(titles_in_prompt)
+    return {(True, True): "both_present", (True, False): "only_hop1_paragraph",
+            (False, True): "only_hop2_paragraph", (False, False): "neither"}[(order[0] in present, order[1] in present)]
 
 
 def parse_answer(text: str) -> str:

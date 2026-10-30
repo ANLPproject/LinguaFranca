@@ -149,17 +149,18 @@ All systems share the **same model, prompt and repair**. Only *when* the repair 
 - **Detection:** probe AUROC ≈ 0.91 vs 0.57–0.68 for the judge. The probe finds the first failing hop 72% of the time; the judge, 25%.
 - **Probe vs judge accuracy:** significantly better on 2Wiki (+5.6 points, CI [+2.2, +9.2]; +9.6 with 2 restarts). Not significant on HotpotQA (CI [−0.8, +6.4]).
 - **Cost:** flags failures **3× earlier** (52 vs 168 tokens), **~40% fewer tokens**; one probe check ≈ 10 ms vs ≈ 740 ms for the judge.
-- **Where it helps:** when exactly one gold paragraph was missing (288 of 500 questions), accuracy rises from 10.8% → 37.5% with one restart (43.4% with two; judge 28.5%); when both are present it is ~unchanged (67% → 69%). Note: the earlier split into "only hop-1" / "only hop-2" used alphabetical title order, not hop order, and is retracted. In true hop order the missing paragraph is almost always the hop-2 one (see `outputs/pipeline/tfidf/diagnostics.md`); per-hop numbers come from re-running `evaluate` after `scripts/remap_eval_conditions.py`.
+- **Where it helps:** TF-IDF almost always keeps the hop-1 paragraph (the question names its entity) and drops the hop-2 paragraph (about the bridge entity). When the **hop-2 paragraph is missing** (282 of 500 questions), accuracy rises from **10.6% → 37.6%** with one restart (judge: 28.7%; oracle: 43.3%). That is also why restarts at hop 2 fix far more answers (84 of 221) than restarts at hop 1 (8 of 79): hop-1 failures are misreadings, not missing evidence.
 - **Retrieval without a trigger does not help:** it fixes and breaks answers at about the same rate.
 
 ### Why the absolute accuracy looks low
 
-1. **The task is hard on purpose.** TF-IDF removes a gold paragraph in **59%** of questions, and if the fact isn't in the prompt, the model cannot answer from the context.
+1. **The task is hard on purpose.** TF-IDF removes a gold paragraph in **59%** of questions (almost always the hop-2 paragraph), and if the fact isn't in the prompt, the model cannot answer from the context.
 
    | 2Wiki condition | share | baseline accuracy |
    |---|---|---|
    | both gold paragraphs present | 41% | **67%** |
-   | a gold paragraph missing | 58% | 8–15% |
+   | the hop-2 paragraph missing (TF-IDF almost always keeps the hop-1 paragraph) | 56% | 11% |
+   | the hop-1 paragraph or both missing | 3% | 0–17% |
 
    The 3B model answers two-thirds correctly when the evidence is there. In the `full10` setting (all 10 paragraphs) it gets **69%** of final answers right.
 2. **The model is small.** Llama-3.2-3B is a weak 2-hop reasoner. The paper compares *triggers* under the same model, so the claim is the gain, not the absolute score.

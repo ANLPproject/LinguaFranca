@@ -62,7 +62,7 @@ meta = dict(setting="tfidf", test_ids=[examples[i]["id"] for i in te], train_ids
 
 
 # ── scripted tiny model ────────────────────────────────────────────────────
-def tiny_scripted_model(name=None, token=None):
+def tiny_scripted_model(name=None, token=None, **kw):
     cfg = LlamaConfig(vocab_size=len(tok), hidden_size=64, intermediate_size=128, num_hidden_layers=4,
                       num_attention_heads=4, num_key_value_heads=2, max_position_embeddings=8192)
     torch.manual_seed(0)
@@ -119,7 +119,8 @@ retriever.hf_file = fake_raw_file
 from src.pipeline import run
 
 sys.argv = ["run", "--setting", "tfidf", "--out", str(OUT), "--probe-dir", str(pdir),
-            "--stages", "evalset,corpus,s0,judge,restarts,rescore,restarts2,live,evaluate",
+            "--stages", "evalset,corpus,s0,judge,restarts,rescore,restarts2,force,live,judges,evaluate",
+            "--judge-models", "tiny/judge-a", "--retriever", "hybrid",
             "--repair", "v2", "--rounds", "2",
             "--n-2wiki", str(N), "--n-hotpot", str(N), "--n-live", "4", "--n-extra-corpus", "50",
             "--max-new-tokens", "400", "--batch-size", "3"]
@@ -145,6 +146,8 @@ res = json.loads((OUT / "results.json").read_text())
 assert set(res["end_to_end"]) == {"2wiki", "hotpotqa"}
 assert {"probe_restart_acc", "probe_restart_2r", "judge_restart_2r"} <= set(res["end_to_end"]["2wiki"]) or not r2
 assert "acc_optimal_tau" in res
+assert read_jsonl(OUT / "judge__tiny_judge-a.jsonl"), "extra judge scores written"
+assert "judge_restart__judge-a" in res["end_to_end"]["2wiki"], "extra judge evaluated"
 eq = res["latency_live_subset"]["equivalence"]
 assert eq["first_pass_is_prefix"] == 1.0 and eq["same_trigger"] == 1.0, eq
 print("equivalence:", eq, "| round-2 restarts:", len(r2))

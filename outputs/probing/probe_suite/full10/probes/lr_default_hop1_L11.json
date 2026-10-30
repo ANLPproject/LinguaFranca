@@ -1,0 +1,21 @@
+{
+ "setting": "full10",
+ "model": "lr_default",
+ "kind": "lr",
+ "params": {},
+ "task": "hop1",
+ "hops": [
+  1
+ ],
+ "layer": 11,
+ "decision_threshold": 0.5,
+ "tau_cv_f05": 0.887,
+ "score": "P(failure) (probability)",
+ "feature": "mean-pooled hidden state of the hop's tokens at the output of block `layer` (float32)",
+ "feature_dim": 3072,
+ "trained_on": "train split of lf_common.canonical_split (GroupShuffleSplit 80/20, seed 42), rows of hops (1,)",
+ "n_train_examples": 3264,
+ "sklearn_version": "1.6.1",
+ "test_auroc": 0.9547192871786785,
+ "cv_auroc_natural": 0.9636234780184032
+}

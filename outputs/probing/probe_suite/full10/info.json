@@ -1,0 +1,41 @@
+{
+ "setting": "full10",
+ "legacy_rows": false,
+ "n_examples": 4078,
+ "n_train_examples": 3264,
+ "n_test_examples": 814,
+ "rows_labelled": 8156,
+ "rows_used": 8089,
+ "dropped": {
+  "no_span": 67,
+  "no_column": 0
+ },
+ "d": 3072,
+ "n_layers": 28,
+ "tasks": {
+  "hop1": {
+   "n_train": 3264,
+   "n_test": 814,
+   "fail_train": 296,
+   "fail_test": 68,
+   "cf_test": 14,
+   "hedge_fail_test": 13
+  },
+  "hop2": {
+   "n_train": 3208,
+   "n_test": 803,
+   "fail_train": 1309,
+   "fail_test": 321,
+   "cf_test": 10,
+   "hedge_fail_test": 11
+  },
+  "hop12": {
+   "n_train": 6472,
+   "n_test": 1617,
+   "fail_train": 1605,
+   "fail_test": 389,
+   "cf_test": 24,
+   "hedge_fail_test": 24
+  }
+ }
+}

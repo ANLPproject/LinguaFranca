@@ -12,3 +12,4 @@ outputs/probing/test_predictions.csv
 # extracted Kaggle run outputs (large; summaries live in outputs/pipeline/)
 pipeline_results/
 pipeline_results*.zip
+pipeline_results*/

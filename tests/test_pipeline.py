@@ -128,6 +128,22 @@ assert repair_query("Q?", hops, 2, "v1") == "Q? " + hops["2"]
 assert repair_query("Q?", hops, 2, "v2") == "Arcady Boytler. Q? " + hops["2"]
 print("[PASS] bridge_entity / repair_query (v2 leads hop-2 queries with the hop-1 entity)")
 
+# ── Test 5c': first-stage condition in TRUE hop order (stored labels are alphabetical) ──
+from src.pipeline.common import gold_titles_in_hop_order, hop_order_condition
+ex = {"question": "Where did the director of film The Great Mike die?", "gold_titles": ["The Great Mike", "Wallace Fox"],
+      "reasoning_graph": [{"hop": 1, "gold_entity": "Wallace Fox"}, {"hop": 2, "gold_entity": "Hollywood"}]}
+assert gold_titles_in_hop_order(ex) == ("The Great Mike", "Wallace Fox")
+ex2 = dict(ex, gold_titles=["Wallace Fox", "The Great Mike"])                      # alphabetical order does not matter
+assert gold_titles_in_hop_order(ex2) == ("The Great Mike", "Wallace Fox")
+ex3 = dict(ex, gold_titles=["Frank McDonald (director)", "Love Begins at 20"], question="Where did the director of film Love Begins At 20 die?",
+           reasoning_graph=[{"hop": 1, "gold_entity": "Frank McDonald"}])
+assert gold_titles_in_hop_order(ex3) == ("Love Begins at 20", "Frank McDonald (director)"), "parenthetical stripped"
+assert hop_order_condition(ex, ["The Great Mike", "Other"]) == "only_hop1_paragraph"
+assert hop_order_condition(ex, ["Wallace Fox"]) == "only_hop2_paragraph"
+assert hop_order_condition(ex, ["Wallace Fox", "The Great Mike"]) == "both_present"
+assert hop_order_condition(ex, []) == "neither" and hop_order_condition({"gold_titles": []}, []) == "unresolved"
+print("[PASS] gold_titles_in_hop_order / hop_order_condition (bridge-entity paragraph = hop 2)")
+
 # ── Test 5d: Platt calibration is monotone and keeps decisions ─
 from src.pipeline.probes import apply_platt, ece, fit_platt
 rng0 = np.random.default_rng(1)

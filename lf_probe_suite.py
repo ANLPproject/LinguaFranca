@@ -335,7 +335,7 @@ def run_setting(setting, examples, hs_dir, args, out_root):
                 conf = ~(Ate["hedge"] & (Ate["y"] == 1))
                 test["confident_only"] = metrics(Ate["y"][conf], s_te[conf], thr)
                 c = dict(setting=setting, model=mname, task=task, layer=L, params=hp, thr=thr, cv=cv, test=test,
-                         oof=[round(float(x), 5) for x in oof], test_scores=[round(float(x), 5) for x in s_te])
+                         oof=[float(x) for x in oof], test_scores=[float(x) for x in s_te])
                 with open(cells_path, "a", encoding="utf-8") as f:
                     f.write(json.dumps(c, default=jdump) + "\n")
                 cells.append(c)
