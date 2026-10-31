@@ -248,13 +248,19 @@ Table~\ref{tab:budget} shows that detection costs the probe 13.4\% of questions 
 \label{fig:causal}
 \end{figure*}
 
-We build minimal pairs by swapping the question's entry entity for another entity of the same token length, so that the clean and counterfactual prompts differ only in that entity (211 informative pairs where the clean run states the gold hop-1 entity and the counterfactual run does not). Counterfactuals are used only for this analysis, never for training. We copy the clean run's block-$L$ states into the counterfactual run at chosen positions and ask whether hop 1 now names the gold entity.
+\paragraph{Design.} We build minimal pairs by swapping the question's entry entity for another entity of the same token length, so that the clean and counterfactual (CF) prompts differ only in that entity (219 pairs from the held-out split; 211 informative, where the clean run states the gold hop-1 entity and the CF run does not). CFs are used only for this analysis, never for training. We copy the clean run's block-$L$ states into the CF run at one position group at a time, for every block: the entity span, its last token, the tokens after it up to the end of the prompt (``tail''), the last prompt token, and the single state at \texttt{</hop1>}. Two read-outs are used: generation (does hop 1 now name the gold entity?) and logit causal tracing (the fraction of the clean-vs-CF log-probability gap of the clean hop 1 that a patch recovers, with entity-name tokens excluded; 183 pairs with a gap of at least one nat). As controls, a third entity's states are patched into the same positions, once for any entity and once for an entity from the same question template. Generation outcomes are fully reproducible (0 of 3,066 differ between two runs). Full tables are in Appendix~\ref{app:causal}.
 
-\paragraph{Where the information is processed.} Patching the entity tokens restores hop 1 in 100\% of pairs at block 0, 90\% at block 8, 73\% at block 10, 45\% at block 12, 19\% at block 14 and 8\% at block 24. A control that inserts a third, unrelated entity restores only 6--16\%, so the effect is entity-specific through block 13 (entity minus control +0.30 at block 11, +0.24 at block 13, +0.07 at block 14, not significant by block 24). The tokens after the entity carry the information over blocks 9--13 (up to 0.50 restored); the last prompt token restores at most 7\%. A logit-based tracing on 183 pairs confirms a sharp hand-off between blocks 13 and 14 (entity span 0.48 to 0.08; last prompt token 0.13 to 0.29) (Figure~\ref{fig:causal}a).
+\paragraph{Where the information is processed.} Patching the entity span restores hop 1 in 100\% of pairs at block 0, 90\% at block 8, 73\% at block 10, 45\% at block 12, 19\% at block 14 and 8\% at block 24. The third-entity control restores only 6--16\%, so the effect is entity-specific through block 13 (entity minus control +0.30 at block 11, +0.24 at block 13, sign test $p\leq 10^{-12}$; +0.07 at block 14; not significant by block 24); against a donor from the same question template the difference stays significant through block 12 (+0.43, $p{=}0.03$, 14 pairs). The tail carries the information over blocks 9--13 (up to 0.50 restored), but entity span and tail together restore only 0.71--0.77 there, so part of it has already moved to later positions; from block 14 neither suffices (0.30 together). The last prompt token restores at most 7\% in generation.
+
+\paragraph{Logit tracing refines the picture} (Figure~\ref{fig:causal}a). The entity's last token carries most of the effect, peaking at 0.63 at block 7; the MLPs at the entity ($\pm 2$ tokens) contribute 0.38--0.40 at blocks 0--2 and 0.30--0.36 at blocks 7--11, and nothing from block 16. Between blocks 13 and 14 there is a sharp hand-off (entity span 0.48 to 0.08, entity last token 0.31 to 0.05, last prompt token 0.13 to 0.29); the last prompt token reaches 0.30 of the log-probability gap at blocks 14--15 although it restores at most 7\% in generation, so information arrives there without being sufficient to change the output. This replicates the layout of our earlier study with all ten paragraphs in the context (51 generation pairs, 93 tracing pairs: entity last token peak 0.48 at block 7, hand-off 13 to 14, last token 0.39 at 14), except that there the MLP contribution peaked at blocks 10--11.
 
 \paragraph{A single hop-boundary state is not causal.} Overwriting only the state at \texttt{</hop1>} restores the answer in at most 1\% of pairs at blocks 8--20. This null result means we do \emph{not} show that the probed boundary state alone causes the failure.
 
-\paragraph{The probe reads grounding, not wording.} Holding the hop-1 text fixed (teacher-forced) and changing only the question's entity, the tuned probe separates clean from counterfactual with AUROC 0.960 (old probe: 0.911), and its score rises in 99\% of pairs when the true entity is ablated more than when a third entity is. Pair by pair, behaviour restored by a patch predicts the probe's score restored (within-pair $r{=}+0.59$ [+0.54, +0.64]; old probe $+0.28$). The tuned probe also follows the third-entity control ($r{=}+0.37$), so it tracks how well the context supports the hop under any intervention. Natural accuracy cannot tell layers 10 and 12 apart (AUROC 0.92--0.94 for both), but causal alignment can ($r$ 0.51--0.62 at block 12 against 0.20--0.46 at block 10); this supports layer 12. A direction estimated from counterfactual pairs separates held-out pairs perfectly but natural failures only weakly (AUROC 0.57--0.72), whereas the naturally trained probe transfers to counterfactuals (0.96), which is why we never train on them.
+\paragraph{The probe follows the intervention.} On the generated hop 1, the tuned probe flags 0.5\% of clean runs and 69\% of CF runs (AUROC 0.990; old probe 0.935), and for patches below its own layer its verdict agrees with whether the patch restored the entity in 95\% of runs (98\% at blocks 0--9; old probe 93\%). Patches at the probe's own block overwrite the state it reads, so agreement there is not informative.
+
+\paragraph{The probe reads grounding, not wording.} Generated text differs between runs, so we also hold the hop-1 text fixed (teacher-forced from the clean run) and change only the question's entity. The tuned probe still separates clean from CF with AUROC 0.960 (old probe 0.911; 0.91--0.96 over five retrains), on identical words. Patching the true entity lowers its score by 2.80 log-odds [2.67, 2.94] more than patching a third entity, in 99\% of pairs. Pair by pair, behaviour restored by a patch predicts the probe's score restored (within-pair, within-block $r{=}+0.59$ [+0.54, +0.64]; old probe $+0.28$ [+0.19, +0.36]; Figure~\ref{fig:causal}c). The tuned probe also follows the third-entity control ($r{=}+0.37$), so it tracks how well the context supports the hop under any intervention. Because it reads block 12, it restores later than behaviour (patching at block 10 restores 0.78 of behaviour but 0.38 of the probe's score; Figure~\ref{fig:causal}b).
+
+\paragraph{Causal alignment chooses the layer.} Retraining at blocks 10 and 12 with $C$ from 0.001 to 1 on five bootstrap samples, natural accuracy cannot tell the layers apart (AUROC 0.92--0.94 for both), but causal alignment can ($r$ 0.51--0.62 at block 12 against 0.20--0.46 at block 10), and $C{=}0.01$ aligns at least as well as $C{=}1$ in all ten comparisons. This independently supports the deployed probe. A direction estimated from CF pairs separates held-out CF pairs perfectly but natural failures only weakly (AUROC 0.57--0.72), whereas the naturally trained probe transfers to CFs (0.96): CFs are one narrow failure type, which is why we never train on them.
 
 \subsection{Beyond hop-end detection}
 
@@ -326,6 +332,50 @@ MLP $-$ tuned LR & $-$.010 [$-$.029, +.004] & +.014 [+.007, +.021] & $-$.001 [$-
 \end{table*}
 
 \paragraph{Reproduction check.} On the all-10 setting, hop-1 results on identical rows differ from the earlier probing run by at most 0.002 AUROC. Hop-2 and pooled AUROC are 0.003 and 0.002 lower than before at every layer, because hops the model never generated (67 rows, 11 in the test split), previously scored on a zero vector, are now dropped.
+
+\section{Causal Analysis Details}
+\label{app:causal}
+
+\begin{table}[h]
+\centering\small
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{rccccc}
+\toprule
+Block & Entity span & Tail & Last prompt tok. & Third entity & Entity $-$ third \\
+\midrule
+0 & 1.00 & 0.00 & 0.00 & 0.10 & +0.90 \\
+8 & 0.90 & 0.35 & 0.00 & 0.15 & +0.74 \\
+10 & 0.73 & 0.40 & 0.00 & 0.14 & +0.59 \\
+11 & 0.46 & 0.46 & 0.01 & 0.16 & +0.30 \\
+12 & 0.45 & 0.50 & 0.01 & 0.14 & +0.31 \\
+13 & 0.38 & 0.48 & 0.03 & 0.14 & +0.24 \\
+14 & 0.19 & 0.15 & 0.07 & 0.12 & +0.07 \\
+24 & 0.08 & 0.04 & 0.02 & 0.06 & +0.02 (n.s.) \\
+\bottomrule
+\end{tabular}}
+\caption{Generation-based patching (211 pairs): share of CF runs whose hop 1 names the gold entity after patching the clean states of a position group at one block. Sign test for entity $-$ third entity: $p{=}10^{-57}$ at block 0, $8\cdot10^{-13}$ at block 13, 0.006 at block 14. Patching only the \texttt{</hop1>} state restores $\leq$1\% at blocks 8--20.}
+\label{tab:patch}
+\end{table}
+
+\begin{table}[h]
+\centering\small
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lll}
+\toprule
+Position group & TF-IDF (183 pairs) & All-10 study (93 pairs) \\
+\midrule
+Entity last token & peak 0.63 (block 7); 0.05 at 14 & peak 0.48 (block 7) \\
+Last prompt token & $\approx$0 to 11; 0.29 at 14, 0.30 at 15 & 0.39 at 14 \\
+MLP at entity ($\pm$2) & 0.38--0.40 (0--2), 0.30--0.36 (7--11), 0 from 16 & peak 0.25 (10--11) \\
+Entity span & 1.00 to block 7; 0.48 at 13; 0.08 at 14 & -- \\
+Tail & 0 $\to$ 0.66 (11--12) $\to$ 0.35 (14) & -- \\
+\bottomrule
+\end{tabular}}
+\caption{Logit causal tracing: fraction of the clean-vs-CF log-probability gap of the clean hop 1 recovered by patching (sanity check, all positions at block 0: 1.000).}
+\label{tab:tracing}
+\end{table}
+
+\paragraph{Probe on generated hops.} CF baseline flagged 0.69 at $\tau{=}0.650$ (old probe 0.48 at its $\tau$), clean 0.005; by CF kind, hedges 0.67 and other wrong entities 0.87, while confident copies of the seed entity are caught at most 22\% of the time by every probe.
 
 \section{Further Results}
 \label{app:hotpot}
