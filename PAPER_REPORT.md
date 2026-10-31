@@ -138,6 +138,7 @@
 | token confidence (best: mean entropy) | 0.727 | 0.734 | – | – |
 
 - Trajectory level (probe vs Llama-3.2-3B judge): F0.5 0.892 vs 0.718; first-failure localisation 74.4 % vs 24.8 %. Phase-1-only rows give the same AUROCs (relabelling does not matter).
+- **In-context examples do not fix it either** (`outputs/pipeline/tfidf_final_lrC0.01_L12/fewshot_judge/fewshot_judge.md`): the Llama-3.1-8B judge with two training-split demonstrations (one failing, one correct hop-2 step) gets slightly *worse*: hop AUROC 0.547 / 0.678 vs 0.597 / 0.729 zero-shot, ECE 0.333 vs 0.264, 2Wiki accuracy 0.396 vs 0.410 at θ = 0.5; 1.2 s and ~1,040 prompt tokens per check. With accuracy-optimal thresholds it collapses to always-restart (0.98) and ties, like every judge; at matched budgets of 40–90 % the probe beats it (+0.05 to +0.09, CIs > 0). Only supervised training closes the gap (diagnoser 0.959).
 - Bigger judges do not fix it: Llama-3.1-8B is no better than 3B; several judges are biased rather than informative (Qwen-3B flags 75–79 % of hops, the Llamas 13–32 %).
 - Sources: `results.md`, `robustness/robustness.md` §6, §8.
 
@@ -304,7 +305,7 @@ Random AURC 0.658, perfect 0.292; probe − best judge −0.109 [−0.151, −0.
 1. **One generator** (Llama-3.2-3B-Instruct); results may differ for other models and sizes.
 2. **One in-domain dataset** (2Wiki); out of domain (HotpotQA) detection degrades (hop AUROC 0.74 / 0.68) and gains are small and limited to bridge questions.
 3. **Label semantics:** "failure" = the hop did not state the gold bridge entity (includes detours). HotpotQA hop labels are automatic (validated on 2Wiki, bridge questions only).
-4. **Baselines:** judges are zero-shot; the fine-tuned diagnoser is one model size (DeBERTa-v3-base), one seed.
+4. **Baselines:** judges are zero-shot (plus a two-shot Llama-3.1-8B, which is no better); the fine-tuned diagnoser is one model size (DeBERTa-v3-base), one seed.
 5. **Causal claims** concern the input-side entity representation and the probe's alignment with it; the probed state alone is not causal. CF pairs are an induced, mostly hedging failure type; confident copied-seed CF failures are caught ≤ 22 %.
 6. **Repair design** (query v2, re-ranking) was developed after seeing early 2Wiki results; HotpotQA is the clean check. Answer forcing was added in the final run (applied to every system).
 7. **Mid-hop stopping** keeps accuracy but saves no compute overall and over-fires out of domain.
