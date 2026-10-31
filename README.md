@@ -13,6 +13,20 @@ We test whether a **lightweight probe on the model's hidden states** can detect 
 
 > **Start here:** this README explains the whole pipeline. Paper source document: `PAPER_REPORT.md` (everything the final paper should contain, organised as the paper). Numbers: `imppoints.md` (all phases, final; §0 maps every notebook, script and output) and `outputs/pipeline/tfidf_final_lrC0.01_L12/results.md` (final Phase 3–5 run, tuned probe). The older draft `outputs/pipeline/tfidf/results_section_draft.md` uses the earlier run's numbers. What was fixed in Oct 2026: `FIXES_AND_RERUN.md`.
 
+### Hugging Face (data, hidden states and trained probes)
+
+All data, hidden states and trained probes are in one Hugging Face dataset: **[AnishRacherla/LinguaFranca-Phase3](https://huggingface.co/datasets/AnishRacherla/LinguaFranca-Phase3)**.
+
+| folder | contents |
+|---|---|
+| `tfidf_distractor_rag/data/raw/2wikimultihopqa/` | the 4,000 labelled 2Wiki questions of the final (TF-IDF top-5) setting (`augmented.jsonl`) and the raw 2Wiki file used for the retrieval corpus |
+| `tfidf_distractor_rag/data/hidden_states/` | per-hop mean-pooled hidden states, all 28 layers (`<id>.pt`) |
+| `tfidf_distractor_rag/cf_v1/` | the TF-IDF counterfactual pairs, aliases and hidden states used for causal patching |
+| `data/` | the earlier all-10-paragraph setting (labelled data and hidden states) |
+| `probes_deployed_tfidf_v2/`, `probe_suite_v1/` | trained probes (deployed pipeline probes and the probe-suite comparison) |
+
+The exact revisions used are pinned in `src/pipeline/common.py`. The final deployed probe is also in this repository (`outputs/pipeline/tfidf/probes_lr_C0.01_L12/`). No models were trained or logged with Weights & Biases; the fine-tuned text diagnoser (`scripts/text_diagnoser.py`) is retrained on demand and not uploaded.
+
 ### Phases (repo numbering)
 | Phase | Description | Code | Kaggle notebook |
 |---|---|---|---|
@@ -236,7 +250,7 @@ Runs, data sources and both retrieval stages in detail: `outputs/pipeline/README
 
 ## Project Structure
 
-Data and hidden states live on Hugging Face (`AnishRacherla/LinguaFranca-Phase3`), not in git. The Phase 1 dataset is also on [Kaggle](https://www.kaggle.com/datasets/havishbalaga/linguafranca-phase1-data). Raw Phase 3–5 run outputs (~300 MB per run) are not committed; their summaries are in `outputs/pipeline/`.
+Data and hidden states live on Hugging Face ([AnishRacherla/LinguaFranca-Phase3](https://huggingface.co/datasets/AnishRacherla/LinguaFranca-Phase3)), not in git. The Phase 1 dataset is also on [Kaggle](https://www.kaggle.com/datasets/havishbalaga/linguafranca-phase1-data). Raw Phase 3–5 run outputs (~300 MB per run) are not committed; their summaries are in `outputs/pipeline/`.
 
 ```
 LinguaFranca/
