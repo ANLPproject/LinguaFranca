@@ -269,6 +269,41 @@ def report(out: Path, probe_dir: Path, run: Path):
                      f"{np.mean([res[it['uid']]['processed'] for it in its]):.0f} |")
         L.append(f"| No intervention | {c0.mean():.3f} | | 0.00 | | | 0 | 0 | | |")
         L.append("")
+
+    # does the shorter (partial-hop) query bring back the missing gold paragraph? 2Wiki only (gold titles known)
+    from src.pipeline.common import load_setting_examples
+    ex = {e["id"]: e for e in load_setting_examples("tfidf")}
+    wiki = [it for it in R.items if it["dataset"] == "2wiki"]
+    L += ["## Retrieval with the partial-hop query (2Wiki)", "",
+          "Mid-hop stops of each system where at least one gold paragraph is missing from the first-stage context. "
+          "'Full' = the cached restart's query (complete hop text, what the deployed probe would have used); "
+          "'partial' = the query actually used after the mid-hop stop. Found = a missing gold paragraph is among the 3 "
+          "retrieved.", "",
+          "| system | mid-hop stops (gold missing) | full query finds it | partial query finds it | both | only full | only partial | "
+          "accuracy if partial found / not found |", "|---|---|---|---|---|---|---|---|"]
+    for sname in ("hybrid", "online"):
+        full_f, part_f, corr = [], [], []
+        for it in wiki:
+            u = it["uid"]
+            d = decide(sname, u, R, P, pb.tau, sig, pmeta)
+            if d is None or d[1] is None:
+                continue
+            k, t = d
+            missing = set(ex[it["id"]].get("gold_titles") or []) - set(it["context_titles"])
+            if not missing:
+                continue
+            full_f.append(bool(missing & set(R.rs[u][f"h{k}"]["retrieved_titles"])))
+            part_f.append(bool(missing & set(mid[(u, k, t)]["retrieved_titles"])))
+            corr.append(bool(S[sname][u]["correct"]))
+        if not full_f:
+            continue
+        full_f, part_f, corr = (np.array(x) for x in (full_f, part_f, corr))
+        acc_f = corr[part_f].mean() if part_f.any() else float("nan")
+        acc_n = corr[~part_f].mean() if (~part_f).any() else float("nan")
+        L.append(f"| {names[sname]} | {len(full_f)} | {full_f.mean():.1%} | {part_f.mean():.1%} | "
+                 f"{int((full_f & part_f).sum())} | {int((full_f & ~part_f).sum())} | {int((~full_f & part_f).sum())} | "
+                 f"{acc_f:.3f} / {acc_n:.3f} |")
+    L.append("")
     (out / "midhop_e2e.md").write_text("\n".join(L), encoding="utf-8")
     print("\n".join(L))
 

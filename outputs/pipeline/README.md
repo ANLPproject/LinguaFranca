@@ -7,6 +7,7 @@ Code: `src/pipeline/` · notebook: `kaggle/pipeline_phase3_5.ipynb` · all numbe
 | folder | probe trigger | repair | max restarts | status |
 |---|---|---|---|---|
 | `tfidf_final_lrC0.01_L12/` | **tuned shared probe** (`tfidf/probes_lr_C0.01_L12`: LR C = 0.01, block 12, τ = 0.650) + answer forcing | **v2** | **2** | **final: main results**; extra analyses in its subfolders (`robustness/`, `selective/`, `error_budget/`, `hotpot_hops/`, `uncertainty_early/`) and `trigger_baselines.md`, `verifier_selection.md`, `full_stats.md` |
+| `tfidf_hybrid_lrC0.01_L12/` | tuned shared probe, as the final run | v2, **hybrid** (dense + BM25) restart retrieval | 2 | retrieval ablation (`dense_vs_hybrid.md`): better in domain, not OOD |
 | `tfidf_v2_r2_shared/` | one shared probe for both hops (old: C = 1, block 10) | v2 | 2 | earlier main run (no answer forcing — do not compare accuracies across runs) |
 | `tfidf_v2_r2/` | dedicated probes, re-evaluated with the shared probe as main (`results.md`; the original report is `results_dedicated_main.md`) | v2 | 2 (dedicated) | figure `sweep.png`, `tables.tex`, `results.json` for the 1-restart rows |
 | `tfidf/` | dedicated probes (shared = ablation row) | v1 (proposal's Naive Restart) | 1 | first run; probes in `tfidf/probes/` |
